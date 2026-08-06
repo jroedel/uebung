@@ -86,11 +86,6 @@ SQLite-backed store is the intended next step and is a drop-in: it implements th
 same `Storer`, so swapping it in is a one-line change in `cmd/uebung/main.go`
 with no change to the business or app layers.
 
-> This first cut targets **Go 1.24** and uses the file store because the
-> environment it was built in could reach neither the Go 1.26 toolchain nor the
-> SQLite driver. Both are single, isolated bumps: raise the `go` line in `go.mod`
-> and add a `stores/sqlitedb` package.
-
 ## Development
 
 ```bash
