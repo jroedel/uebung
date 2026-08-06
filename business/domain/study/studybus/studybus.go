@@ -22,8 +22,8 @@ import (
 )
 
 // Storer is the persistence port for scheduling records. It is phrased entirely
-// in the (user, lang, lemma) key so any backend — a file today, SQLite or
-// Postgres later — implements the same four operations.
+// in the (user, lang, lemma) key so any backend — SQLite today, Postgres or a
+// memory map for tests — implements the same three operations.
 type Storer interface {
 	// List returns every Progress a user has for a language. Order is not
 	// promised; the caller sorts.

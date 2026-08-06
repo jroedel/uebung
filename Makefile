@@ -1,8 +1,9 @@
 # Übung — der/die/das trainer.
 #
 # Targets mirror the sibling project's workflow (build / vet / fmt / lint /
-# test) so the same habits apply here. This module is stdlib-only, so there is
-# no dependency download step and `go test ./...` runs fully offline.
+# test) so the same habits apply here. The one dependency is the pure-Go SQLite
+# driver, so builds need no C toolchain; run `make deps` once and the suite runs
+# offline from the module cache thereafter.
 
 GO        ?= go
 BINARY    ?= uebung
@@ -15,6 +16,10 @@ ADDR      ?= :8080
 help: ## List targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN{FS=":.*?## "}{printf "  %-18s %s\n", $$1, $$2}'
+
+.PHONY: deps
+deps: ## Download module dependencies into the module cache
+	$(GO) mod download
 
 .PHONY: build
 build: ## Build the server binary
