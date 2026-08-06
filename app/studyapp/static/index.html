@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Übung — der / die / das</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Übung</h1>
+    <p class="subtitle">der · die · das — subtitle nouns</p>
+    <div class="stats" id="stats" hidden>
+      <span id="stat-remaining">–</span> left ·
+      <span id="stat-learned">–</span>/<span id="stat-deck">–</span> learned ·
+      <span id="stat-due">–</span> due
+    </div>
+  </header>
+
+  <main class="stage" id="stage">
+    <!-- Drop-zone hints framing the card. -->
+    <div class="hint hint-left"  data-article="der">der</div>
+    <div class="hint hint-up"    data-article="das">das</div>
+    <div class="hint hint-right" data-article="die">die</div>
+
+    <!-- The live card stack is injected here. -->
+    <div class="deck" id="deck" aria-live="polite"></div>
+
+    <!-- End-of-batch summary panel. -->
+    <section class="panel" id="panel" hidden>
+      <h2 id="panel-title">Nice work.</h2>
+      <p id="panel-body"></p>
+      <button class="primary" id="again-btn">Next batch</button>
+    </section>
+
+    <!-- Loading / error states. -->
+    <section class="panel" id="status-panel">
+      <p id="status-text">Loading your cards…</p>
+    </section>
+  </main>
+
+  <nav class="controls" id="controls" hidden aria-label="Answer">
+    <button class="choice der" data-article="der">der<small>◀ swipe left</small></button>
+    <button class="choice das" data-article="das">das<small>▲ swipe up</small></button>
+    <button class="choice die" data-article="die">die<small>swipe right ▶</small></button>
+  </nav>
+
+  <footer class="footer">
+    <p>Swipe or use ← ↑ → keys. Green = right, red = wrong. Progress saves automatically.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
