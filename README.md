@@ -100,10 +100,16 @@ keeps the whole suite runnable offline.
 ## Development
 
 ```bash
-make test     # unit tests + vet + gofmt check
-make lint     # vet + gofmt check
-make build    # ./uebung
+make test        # unit tests + lint + vulnerability scan
+make test-unit   # unit tests alone
+make lint        # vet + gofmt check
+make vuln-check  # govulncheck against the Go vulnerability database
+make build       # ./uebung
 ```
+
+`govulncheck` is pinned as a tool dependency in `go.mod`, so `make vuln-check`
+needs no separate install — but it does query the vulnerability database over
+the network. Offline, run `make test-unit lint`.
 
 The deck genders are hand-verified; corrections to
 `business/domain/vocab/stores/seeddb/nouns_de.json` are welcome, and the seed

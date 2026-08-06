@@ -1,9 +1,13 @@
 # Übung — der/die/das trainer.
 #
 # Targets mirror the sibling project's workflow (build / vet / fmt / lint /
-# test) so the same habits apply here. The one dependency is the pure-Go SQLite
-# driver, so builds need no C toolchain; run `make deps` once and the suite runs
-# offline from the module cache thereafter.
+# test) so the same habits apply here. The one runtime dependency is the pure-Go
+# SQLite driver, so builds need no C toolchain.
+#
+# Offline: everything here runs from the module cache after one `make deps`,
+# with one exception -- `vuln-check` queries the Go vulnerability database over
+# the network on every run, and `make test` includes it. On a machine with no
+# network, run `make test-unit lint` instead.
 
 GO        ?= go
 BINARY    ?= uebung
@@ -47,6 +51,10 @@ fmt-check: ## Fail if any Go source is not gofmt-clean
 .PHONY: lint
 lint: vet fmt-check ## vet + gofmt check
 
+.PHONY: vuln-check
+vuln-check: ## Check dependencies against the Go vulnerability database (needs network)
+	$(GO) tool govulncheck ./...
+
 .PHONY: test-unit
 test-unit: ## Run unit tests
 	$(GO) test ./...
@@ -56,7 +64,7 @@ test-integration: ## Run tests tagged as integration
 	$(GO) test -tags=integration ./...
 
 .PHONY: test
-test: test-unit lint ## Full check: unit tests + lint
+test: test-unit lint vuln-check ## Full check: unit tests + lint + vulnerability scan
 
 .PHONY: cover
 cover: ## Unit tests with a coverage summary
