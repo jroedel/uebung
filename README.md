@@ -215,7 +215,12 @@ keeps the whole suite runnable offline.
 
 `deploy/deploy.sh` does the whole thing. **The script is committed; the server's
 identity is not** — host, account and port come from `deploy/deploy.env`, which is
-gitignored:
+gitignored.
+
+> **Humans only.** Every subcommand opens an SSH session to production, the
+> read-only ones included. Agents must not run it; see *Production access* in
+> [AGENTS.md](AGENTS.md), and [production_recon.md](production_recon.md) for what
+> is already known about the server without needing to look.
 
 ```bash
 cp deploy/deploy.env.example deploy/deploy.env   # then fill it in
@@ -238,11 +243,23 @@ That rule **excludes `/.well-known/`**, which matters more than it looks:
 konsoleH's FileAuth writes certificate challenges into the document root, and a
 catch-all proxy hands them to the app instead, which quietly breaks renewal.
 
-**The binary and the database live outside the document root** (`~/uebung`, not
-`~/public_html/...`). `uebung.db` holds every account's address and their session
-hashes; under the docroot it would be one broken `.htaccess` away from being
-downloadable. Only `.htaccess` belongs there, and `install` warns about any other
-file it finds.
+**The document root is a `public/` subdirectory of the application directory:**
+
+```
+~/public_html/uebung.club/          binary, database, env, backups
+~/public_html/uebung.club/public/   .htaccess and nothing else  <- document root
+```
+
+The nesting is the safety property: the served directory is *below* the one
+holding `uebung.db`, which contains every account's address and their session
+hashes. This needs the konsoleH document root set to `/uebung.club/public`
+(Services → Server Configuration → Change document root).
+
+Until that setting is changed Apache serves the application directory itself, and
+the database is downloadable — so `deploy.sh` **refuses to run** unless it can
+prove otherwise. It asks for `uebung.db`, `uebung.env` and `run.sh` over HTTPS and
+requires a non-200 answer, because the document root is a panel setting and cannot
+be checked from the server side.
 
 ### Secrets
 
