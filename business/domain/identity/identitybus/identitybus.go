@@ -485,15 +485,31 @@ func (b *Business) SetNickname(ctx context.Context, id userid.UserID, name nickn
 	return user, nil
 }
 
-// AssignNickname gives an account a generated name. This is what "skip" does:
-// everyone ends up with a name, and a learner who does not want to choose one
-// still gets something a leaderboard can print.
+// AssignNickname gives an account a name without making anyone choose one. This
+// is what "skip" does: everyone ends up with a name, and a learner who does not
+// want to pick one still gets something a leaderboard can print.
 //
-// It generates and claims in a loop rather than trusting an earlier suggestion,
-// because the name shown on the skip button may have been taken in the meantime.
-// Losing that race is silent by design — the person asked not to think about
-// this, so handing them a different name is a better answer than an error.
-func (b *Business) AssignNickname(ctx context.Context, id userid.UserID) (User, error) {
+// preferred is the name the learner was actually shown — on a button reading
+// "Rather not choose? Be Blaue Eule" — and claiming it is the whole point:
+// having been offered a specific name and agreed to it, that is the name they
+// expect to find on their account. Passing the zero value asks for any free
+// name, which is what a caller with nothing to honour should do.
+//
+// A generated name is used only as a fallback, because the suggestion reserves
+// nothing and may have been taken between being offered and being accepted.
+// Losing that race stays silent: the person asked not to think about this, so
+// handing them a different name beats an error.
+func (b *Business) AssignNickname(ctx context.Context, id userid.UserID, preferred nickname.Nickname) (User, error) {
+	if !preferred.IsZero() {
+		user, err := b.SetNickname(ctx, id, preferred)
+		if err == nil {
+			return user, nil
+		}
+		if !errors.Is(err, ErrNicknameTaken) {
+			return User{}, err
+		}
+	}
+
 	for attempt := range suggestAttempts {
 		name, err := b.namer.Generate(attempt)
 		if err != nil {

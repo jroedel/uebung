@@ -474,12 +474,34 @@ func TestSigningInAgainKeepsTheNickname(t *testing.T) {
 	}
 }
 
-func TestAssignNicknameGivesAGeneratedName(t *testing.T) {
+// The name a learner was shown is the name they must get. This is the case that
+// was broken: AssignNickname ignored the suggestion and drew afresh, so the
+// button said one thing and the account got another.
+//
+// The preferred name here is deliberately NOT one the stub namer would ever
+// offer, so a regression that falls back to generating cannot pass by accident.
+func TestAssignNicknameClaimsTheNameThatWasOffered(t *testing.T) {
+	f := newFixture(t)
+
+	user := f.userFor(t, "learner@example.com")
+	offered := nickname.MustParse("Feine Tulpe")
+
+	updated, err := f.bus.AssignNickname(t.Context(), user.ID, offered)
+	if err != nil {
+		t.Fatalf("AssignNickname: %v", err)
+	}
+	if updated.Nickname != offered {
+		t.Errorf("assigned %q, want the offered name %q", updated.Nickname, offered)
+	}
+}
+
+// With nothing to honour, any free name will do.
+func TestAssignNicknameGeneratesWhenNothingIsPreferred(t *testing.T) {
 	f := newFixture(t)
 
 	user := f.userFor(t, "learner@example.com")
 
-	updated, err := f.bus.AssignNickname(t.Context(), user.ID)
+	updated, err := f.bus.AssignNickname(t.Context(), user.ID, nickname.Nickname{})
 	if err != nil {
 		t.Fatalf("AssignNickname: %v", err)
 	}
@@ -500,12 +522,12 @@ func TestAssignNicknameRetriesPastATakenName(t *testing.T) {
 	first := f.userFor(t, "first@example.com")
 	second := f.userFor(t, "second@example.com")
 
-	// The first account takes what the namer offers first.
+	// The first account takes what the second is about to be offered.
 	if _, err := f.bus.SetNickname(t.Context(), first.ID, nickname.MustParse("Blaue Eule")); err != nil {
 		t.Fatalf("SetNickname: %v", err)
 	}
 
-	updated, err := f.bus.AssignNickname(t.Context(), second.ID)
+	updated, err := f.bus.AssignNickname(t.Context(), second.ID, nickname.MustParse("Blaue Eule"))
 	if err != nil {
 		t.Fatalf("AssignNickname: %v", err)
 	}
@@ -582,7 +604,7 @@ func TestAssignNicknameReportsAGeneratorFailure(t *testing.T) {
 	user := f.userFor(t, "learner@example.com")
 	f.namer.fail = errors.New("word lists unavailable")
 
-	if _, err := f.bus.AssignNickname(t.Context(), user.ID); err == nil {
+	if _, err := f.bus.AssignNickname(t.Context(), user.ID, nickname.Nickname{}); err == nil {
 		t.Error("AssignNickname succeeded despite the namer failing")
 	}
 }

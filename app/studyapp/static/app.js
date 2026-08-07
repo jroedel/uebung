@@ -103,6 +103,7 @@ const state = {
   locked: false, // true while an answer animates, to swallow double input
   advance: null, // while a reveal is on screen: run it early to skip the rest
   timers: [],    // pending reveal timeouts, cleared if the reveal is cut short
+  suggestion: "", // the nickname currently offered on the skip button
 };
 
 // --- sign-in ---------------------------------------------------------------
@@ -227,7 +228,7 @@ async function requestLink(e) {
 //
 // The suggestion is not reserved. If it has been taken by the time they press
 // the button, the server quietly assigns a different one — which is why the
-// button posts nothing and the assigned name is read back from the response.
+// assigned name is always read back from the response rather than assumed.
 function showNicknamePrompt(suggestion) {
   hide(el.statusPanel);
   hide(el.panel);
@@ -246,8 +247,12 @@ function showNicknamePrompt(suggestion) {
   // put on it.
   if (suggestion) {
     el.nicknameSkipBtn.textContent = `Be “${suggestion}”`;
+    // Held so the button can claim the name it is showing. Reading it back off
+    // the label would work but would tie the request to the button's wording.
+    state.suggestion = suggestion;
     show(el.nicknameSkipLine);
   } else {
+    state.suggestion = "";
     hide(el.nicknameSkipLine);
   }
 
@@ -341,7 +346,13 @@ async function skipNickname() {
   el.nicknameSkipBtn.disabled = true;
 
   try {
-    const res = await fetch(API.skipNickname, { method: "POST" });
+    // Send the name on the button. The server claims exactly this one unless it
+    // has been taken since it was offered, in which case it picks another.
+    const res = await fetch(API.skipNickname, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nickname: state.suggestion }),
+    });
 
     if (res.status === 401) {
       showSignIn();

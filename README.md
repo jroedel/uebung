@@ -108,10 +108,12 @@ person could have typed themselves.
   where a homoglyph pays off — Cyrillic `а` renders identically to Latin `a` —
   and an allowlist rules that out by construction rather than by a confusables
   table someone has to keep current.
-- **A suggestion reserves nothing.** It is offered on the skip button and may be
-  taken before it is accepted, in which case the server quietly assigns a
-  different one. Holding a reservation would need its own expiry and its own
-  cleanup for no gain.
+- **Skipping claims the name on the button.** Someone who pressed "Be Blaue
+  Eule" agreed to a specific name, so that is the name they get. The suggestion
+  itself reserves nothing — holding a reservation would need its own expiry and
+  cleanup — so if it was taken in the meantime the server quietly picks another.
+  The client always reads the assigned name back from the response rather than
+  assuming it.
 - **Screening is whole-word**, against a reserved list (impersonation: `admin`,
   `uebung`, `support`) and a profanity list. It will never be complete, and it
   is tuned to avoid false positives rather than to maximise recall — `das Ass`
