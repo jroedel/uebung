@@ -3,8 +3,7 @@
 // It exists for tests and for a throwaway session where nothing needs to outlive
 // the process. It holds Business models directly rather than converting through a
 // row type, because there is no serialization boundary to cross — the whole point
-// is that nothing leaves memory. A production run uses filedb (or, once its
-// driver is available, a sqlitedb) instead.
+// is that nothing leaves memory. A real run uses sqlitedb instead.
 package memdb
 
 import (
