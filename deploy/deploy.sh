@@ -87,6 +87,24 @@ require() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not insta
 # assert_layout_sane catches a configuration that would put the database inside
 # the web root. It is a string check, so it runs before anything is uploaded.
 assert_layout_sane() {
+	# Catch a path that bash expanded locally. `APP_DIR=~/x` in deploy.env is an
+	# unquoted assignment, and bash tilde-expands those, so the value silently
+	# becomes the *developer's* home directory and gets sent to the server as an
+	# absolute path that means nothing there. Symptom: mkdir failing on a path
+	# under /home/<your-username>.
+	local d
+	for d in "$APP_DIR" "$DOCROOT"; do
+		case "$d" in
+		"$HOME"/* | "$HOME")
+			die "$d looks like a path on THIS machine (it starts with \$HOME).
+   deploy.env probably has APP_DIR=~/... — bash expands the tilde in an unquoted
+   assignment. Use a path relative to the remote home instead:
+       APP_DIR=public_html/uebung.club
+       DOCROOT=public_html/uebung.club/public"
+			;;
+		esac
+	done
+
 	case "$APP_DIR" in
 	"$DOCROOT" | "$DOCROOT"/*)
 		die "APP_DIR ($APP_DIR) is inside DOCROOT ($DOCROOT). The database would be web-reachable."
