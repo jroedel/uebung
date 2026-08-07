@@ -87,6 +87,29 @@ die() {
 
 require() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"; }
 
+# report_source says which commit is about to be built, and warns when that is
+# probably not what the operator intended. deploy.sh builds from the working tree,
+# not from origin/main, so a stale checkout or an uncommitted edit ships silently
+# otherwise.
+report_source() {
+	local branch head dirty behind
+	branch=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+	head=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo "?")
+	log "building from $branch @ $head"
+
+	dirty=$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | grep -cv '^??' || true)
+	if [ "${dirty:-0}" -gt 0 ]; then
+		warn "$dirty uncommitted change(s) in tracked files will be included in this build"
+	fi
+
+	git -C "$REPO_DIR" fetch -q origin 2>/dev/null || true
+	behind=$(git -C "$REPO_DIR" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+	if [ "${behind:-0}" -gt 0 ]; then
+		warn "this checkout is $behind commit(s) behind origin/main:"
+		git -C "$REPO_DIR" log --oneline HEAD..origin/main 2>/dev/null | sed 's/^/     /' >&2
+	fi
+}
+
 # assert_layout_sane catches a configuration that would put the database inside
 # the web root. It is a string check, so it runs before anything is uploaded.
 assert_layout_sane() {
@@ -196,14 +219,27 @@ cmd_install() {
 	assert_layout_sane
 
 	log "creating $APP_DIR and $DOCROOT"
-	# The app directory is not world-readable; the docroot must be, since Apache
-	# reads .htaccess from it.
-	remote "mkdir -p $APP_DIR/backups $DOCROOT && chmod 700 $APP_DIR && chmod 755 $DOCROOT"
+	# 711 on the application directory, not 700.
+	#
+	# The document root is *inside* it, and reaching a directory requires execute
+	# permission on every parent. Apache does not run as this account, so 700 made
+	# it impossible to traverse into public/ and every URL answered 403 — including
+	# paths that do not exist, which is the tell: a missing file gives 404, a
+	# path Apache cannot walk gives 403.
+	#
+	# 711 grants traverse without read, so the directory still cannot be listed.
+	# Confidentiality of the database does not rest on this in any case: it lives
+	# above the document root, so no URL maps to it at all. The mode is
+	# defence-in-depth, and 600 on the two sensitive files below is the rest of it.
+	remote "mkdir -p $APP_DIR/backups $DOCROOT && chmod 711 $APP_DIR && chmod 700 $APP_DIR/backups && chmod 755 $DOCROOT"
 
 	log "uploading run.sh and supervise.sh"
 	push "$SCRIPT_DIR/run.sh" "$APP_DIR/run.sh"
 	push "$SCRIPT_DIR/supervise.sh" "$APP_DIR/supervise.sh"
 	remote "chmod 700 $APP_DIR/run.sh $APP_DIR/supervise.sh"
+	# Belt and braces on the two files that would matter if the layout were ever
+	# mangled: the database and the file holding the SMTP password.
+	remote "cd $APP_DIR && chmod 600 uebung.env 2>/dev/null; chmod 600 uebung.db 2>/dev/null; true"
 
 	install_env
 	install_htaccess
@@ -375,6 +411,8 @@ cmd_deploy() {
 	require scp
 	require curl
 
+	report_source
+
 	assert_layout_sane
 	log "checking the document root is not serving the application directory"
 	assert_not_exposed
@@ -440,29 +478,66 @@ mv -f uebung.new uebung
 $(supervisor_cmd start)
 EOF
 
-	local ok=no
+	# Two checks, and keeping them apart is the point.
+	#
+	# The loopback check proves the new binary runs. The public check proves Apache
+	# is proxying to it. Only the first justifies rolling a binary back: a proxy
+	# that is not wired up is not the binary's fault, and reverting a good release
+	# because Apache is misconfigured discards the release and hides the real
+	# problem. That is exactly what happened on the first real deploy — the app was
+	# listening happily on loopback while every public URL answered 403.
+	local app_ok=no public_ok=no
 	if [ "$swapped" = "no" ]; then
 		warn "the remote restart failed"
 	else
-		log "waiting for health"
+		log "waiting for the app on 127.0.0.1:$APP_PORT"
 		for _ in $(seq 1 20); do
-			if curl -fsS --max-time 10 "$PUBLIC_URL/healthz" >/dev/null 2>&1; then
-				ok=yes
+			if remote "curl -fsS --max-time 5 http://127.0.0.1:$APP_PORT/healthz" >/dev/null 2>&1; then
+				app_ok=yes
 				break
 			fi
 			sleep 1.5
 		done
 	fi
 
-	if [ "$ok" = "yes" ]; then
+	if [ "$app_ok" = "yes" ]; then
+		log "app is healthy on loopback"
+		log "checking it is reachable at $PUBLIC_URL"
+		for _ in $(seq 1 10); do
+			if curl -fsS --max-time 10 "$PUBLIC_URL/healthz" >/dev/null 2>&1; then
+				public_ok=yes
+				break
+			fi
+			sleep 1.5
+		done
+	fi
+
+	# Record what is running, so "which commit is live?" is answerable later.
+	if [ "$app_ok" = "yes" ]; then
+		remote_in_app "printf '%s\\n' '$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)' > deployed-commit.txt" || true
+	fi
+
+	if [ "$app_ok" = "yes" ] && [ "$public_ok" = "yes" ]; then
 		log "healthy: $PUBLIC_URL/healthz"
-		remote "cd $APP_DIR && rm -f uebung.prev"
+		remote_in_app "rm -f uebung.prev" || true
 		log "deployed"
 
 		return 0
 	fi
 
-	warn "health check failed — rolling back"
+	if [ "$app_ok" = "yes" ]; then
+		# Keep the release. The binary is fine; the web front end is not.
+		warn "the app is running and healthy on loopback, but $PUBLIC_URL/healthz does not answer."
+		warn "the new binary has been KEPT — this is an Apache/document-root problem, not a bad build."
+		warn "check, in this order:"
+		warn "  1. konsoleH document root is /uebung.club/public"
+		warn "  2. $DOCROOT/.htaccess exists and Apache may read it"
+		warn "  3. $APP_DIR is mode 711 — Apache must traverse it to reach public/"
+		warn "     (403 on every path, including ones that do not exist, means exactly this)"
+		exit 1
+	fi
+
+	warn "the app did not become healthy on loopback — rolling back"
 	remote_script <<EOF
 set -euo pipefail
 cd $APP_DIR
@@ -477,7 +552,7 @@ fi
 $(supervisor_cmd start) || true
 EOF
 
-	remote "tail -n 40 $APP_DIR/uebung.log" || true
+	remote_in_app "tail -n 40 uebung.log" || true
 	die "deploy failed and was rolled back"
 }
 
