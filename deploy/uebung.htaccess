@@ -21,6 +21,24 @@ RewriteEngine On
 RewriteCond %{REQUEST_URI} ^/\.well-known/ [NC]
 RewriteRule ^ - [L]
 
+# Force HTTPS.
+#
+# Placement is deliberate: after the ACME passthrough, so HTTP-01 validation still
+# works over plain HTTP, and before the proxy, so the app never handles a
+# cleartext request at all.
+#
+# The second condition guards against a redirect loop. If TLS were ever terminated
+# somewhere in front of Apache, %{HTTPS} would be off on an already-https request
+# and the first condition alone would redirect it to itself forever. Honouring
+# X-Forwarded-Proto costs nothing and turns a site-down failure into a no-op.
+#
+# konsoleH also offers an "HTTPS redirect" toggle in SSL Manager. Both together are
+# harmless — the panel's runs first — and having it here means it is in git,
+# reviewable, and survives a panel setting being changed by accident.
+RewriteCond %{HTTPS} !=on
+RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
 # Everything else goes to the app. QSA keeps the query string, which carries the
 # ?lang= parameters and the sign-in token.
 RewriteRule ^(.*)$ http://127.0.0.1:__APP_PORT__/$1 [P,QSA,L]
