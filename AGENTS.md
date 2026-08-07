@@ -25,6 +25,26 @@
 - Never merge, never push to the main branch, never force-push, and never delete branches or tags. If asked, refuse and give the user the commands to run.
 - Do not add a `Co-Authored-By` trailer to commits.
 
+## Production access — do not
+
+- **Never open an SSH session to a production host.** Not to look, not to run a
+  read-only command, not to "just check". This includes `ssh`, `scp`, `sftp`,
+  `rsync` and anything wrapping them, and it includes hosts reachable with a key
+  that happens to already be on the development machine.
+- **Never run `deploy/deploy.sh` or any subcommand of it**, including `probe`,
+  `status`, `logs` and `backup`. Every one of them opens an SSH session. The
+  script is written for a human to run.
+- `deploy/deploy.env` may be present on a development machine. It is a
+  convenience for the person deploying, **not** a licence to use it.
+- What to do instead: prepare the change, explain what it will do, and give the
+  user the exact command to run. Ask them to paste the output back if you need it.
+- If you believe a task genuinely cannot be done without touching production,
+  say so and stop. Do not proceed on the assumption that read-only makes it fine.
+
+`production_recon.md` records what is already known about the server, so that
+questions about it can usually be answered without asking anyone to run anything.
+Read it before proposing deployment work.
+
 ## Feature development — mandatory skills
 
 Always apply these skills when doing feature work; do not rely on memory:

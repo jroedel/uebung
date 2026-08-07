@@ -5,6 +5,11 @@
 # come from deploy/deploy.env (gitignored) or from the environment, so nothing
 # here reveals where the app runs. See deploy.env.example.
 #
+# FOR A HUMAN TO RUN. Every subcommand opens an SSH session to production,
+# including the read-only ones, so agents must not invoke this — see the
+# "Production access" section of AGENTS.md, and production_recon.md for what is
+# already known about the server without looking.
+#
 # Usage:
 #   deploy/deploy.sh probe        what does this server support? (read-only)
 #   deploy/deploy.sh install      one-time: directories, supervisor, cron, htaccess
@@ -79,6 +84,48 @@ die() {
 
 require() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"; }
 
+# assert_layout_sane catches a configuration that would put the database inside
+# the web root. It is a string check, so it runs before anything is uploaded.
+assert_layout_sane() {
+	case "$APP_DIR" in
+	"$DOCROOT" | "$DOCROOT"/*)
+		die "APP_DIR ($APP_DIR) is inside DOCROOT ($DOCROOT). The database would be web-reachable."
+		;;
+	esac
+}
+
+# assert_not_exposed proves from the outside that the document root really is the
+# public/ subdirectory.
+#
+# This is the check that makes the nested layout safe. The app directory holds
+# uebung.db, uebung.env and the scripts; if konsoleH's document root still points
+# at the app directory rather than public/, Apache serves those files directly and
+# a stranger can download every account address and session hash. It cannot be
+# verified from the server side, because the docroot is a panel setting, not a
+# file — so it is verified the only way that is conclusive: by asking for the
+# files over HTTPS and requiring not-200.
+#
+# With the docroot correct, .htaccess proxies everything, and these paths answer
+# 404 (app up) or 503 (app down) — never 200.
+assert_not_exposed() {
+	local exposed=() f code
+	for f in uebung.env uebung.db run.sh supervise.sh; do
+		code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PUBLIC_URL/$f" 2>/dev/null || echo 000)
+		if [ "$code" = "200" ]; then
+			exposed+=("$f")
+		fi
+	done
+
+	if [ ${#exposed[@]} -gt 0 ]; then
+		warn "these application files are being served over the web:"
+		printf '     %s/%s\n' "$PUBLIC_URL" "${exposed[@]}" >&2
+		die "the konsoleH document root is not $DOCROOT.
+   Set it to /uebung.club/public under Services > Server Configuration >
+   Change document root, then re-run. Refusing to continue: uebung.db holds
+   every account's address and their session hashes."
+	fi
+}
+
 # --- subcommands -----------------------------------------------------------
 
 # probe reports what the server can do. Read-only: it changes nothing, so it is
@@ -125,8 +172,12 @@ PROBE
 
 # cmd_install prepares the server. Idempotent; safe to re-run.
 cmd_install() {
-	log "creating $APP_DIR"
-	remote "mkdir -p $APP_DIR/backups && chmod 700 $APP_DIR"
+	assert_layout_sane
+
+	log "creating $APP_DIR and $DOCROOT"
+	# The app directory is not world-readable; the docroot must be, since Apache
+	# reads .htaccess from it.
+	remote "mkdir -p $APP_DIR/backups $DOCROOT && chmod 700 $APP_DIR && chmod 755 $DOCROOT"
 
 	log "uploading run.sh and supervise.sh"
 	push "$SCRIPT_DIR/run.sh" "$APP_DIR/run.sh"
@@ -142,6 +193,8 @@ cmd_install() {
 	*) die "SUPERVISOR must be 'systemd' or 'nohup', got '$SUPERVISOR'" ;;
 	esac
 
+	log "checking the document root is not serving the application directory"
+	assert_not_exposed
 	log "install complete — now run: deploy/deploy.sh"
 }
 
@@ -198,7 +251,7 @@ install_htaccess() {
 	# but the docroot should otherwise hold nothing: everything else is served by
 	# the app, and files here would be reachable if the proxy rule ever broke.
 	local strays
-	strays="$(remote "ls -A $DOCROOT | grep -v -e '^.htaccess$' -e '^.well-known$' || true")"
+	strays="$(remote "ls -A $DOCROOT | grep -v -e '^.htaccess\$' -e '^.well-known\$' || true")"
 	if [ -n "$strays" ]; then
 		warn "unexpected files in the document root — they are not served by the app,"
 		warn "and would become reachable if .htaccess were ever removed:"
@@ -292,6 +345,11 @@ cmd_deploy() {
 	require go
 	require ssh
 	require scp
+	require curl
+
+	assert_layout_sane
+	log "checking the document root is not serving the application directory"
+	assert_not_exposed
 
 	if [ "$skip_tests" = "no" ]; then
 		log "make test"
