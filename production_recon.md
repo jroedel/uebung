@@ -68,6 +68,22 @@ Apache terminates TLS. The app runs on **loopback only** and is reached through 
   over SSH. `deploy.sh` verifies it the only conclusive way: by requesting
   `uebung.db`, `uebung.env`, `run.sh` over HTTPS and requiring not-200.
 
+### Filesystem layout, and the permission that breaks it
+
+`public_html` is a **symlink**. The real path is
+`/usr/www/users/<account>/<domain>/` — visible in the app's own log line, where
+`-data public_html/uebung.club/uebung.db` resolved to
+`/usr/www/users/<account>/uebung.club/uebung.db`.
+
+**Apache does not run as the account user.** This matters for the nested layout:
+reaching `<app dir>/public/` requires *execute* permission on `<app dir>`, so
+mode **700 on the application directory makes every URL answer 403**. It must be
+**711** — traverse without read, so the directory still cannot be listed.
+
+Confidentiality of the database does not depend on that mode. It sits *above* the
+document root, so no URL maps to it at all; the mode and `chmod 600` on
+`uebung.db`/`uebung.env` are defence-in-depth.
+
 ### Reading Apache's status codes here
 
 This distinction cost real time to work out and is worth keeping:
@@ -77,8 +93,12 @@ This distinction cost real time to work out and is worth keeping:
 - **503 on every path** — Apache is proxying to a backend that is down. `[P]` is
   configured and the app is not running.
 
+- **403 on paths that do not exist** — not a missing file (that is 404) but a
+  directory Apache cannot walk. In practice: a permission problem on the docroot
+  or one of its parents.
+
 `tmpcontrol.online` returns a blanket 503; `uebung.club` returned 403 before
-deployment.
+deployment, and 403 again afterwards when the app directory was mode 700.
 
 ## TLS
 
@@ -194,6 +214,11 @@ Each of these was a real bug or a real wasted hour:
 - **A child inheriting stdin keeps an `ssh` channel open.** Without `</dev/null`
   the invoking `ssh` waits for EOF and never returns, hanging a deploy right after
   it starts the app.
+- **A health check against the public URL cannot tell a bad binary from a
+  misconfigured proxy.** The first real deploy rolled back a perfectly good
+  release because Apache was answering 403 while the app was listening happily on
+  loopback. Check `127.0.0.1:<port>/healthz` on the host first, and only treat a
+  failure *there* as grounds to revert.
 - **`pkill -f` matches its own command line.** It killed the invoking shell twice
   during this work. Break the pattern (`"sl""eep 400"`) or use a PID.
 - **Spamhaus returns `127.255.255.254` from public resolvers** — that is *query
