@@ -14,6 +14,7 @@ const API = {
   limit: 20,
   batch: (lang, limit) => `/api/batch?lang=${encodeURIComponent(lang)}&limit=${limit}`,
   grade: "/api/grade",
+  summary: (lang) => `/api/summary?lang=${encodeURIComponent(lang)}`,
 };
 
 // Direction → article. Left = der, Up = das, Right = die. Chosen so the two
@@ -81,6 +82,23 @@ async function loadBatch() {
     renderStack();
   } catch (err) {
     showStatus("Couldn't reach the server. Check your connection and try again.");
+    console.error(err);
+  }
+}
+
+// The header's learned/deck/due counters otherwise arrive only in the grade
+// response at the end of a batch, which leaves them showing their placeholder
+// dashes for a learner's whole first session. Fetch them once at start-up so the
+// header is populated on arrival.
+//
+// Deliberately not awaited by the caller: these counters are decorative, and the
+// cards must not wait on them. A failure is logged and left at the placeholders.
+async function loadSummary() {
+  try {
+    const res = await fetch(API.summary(API.lang), { headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(`summary failed: ${res.status}`);
+    applySummary(await res.json());
+  } catch (err) {
     console.error(err);
   }
 }
@@ -401,4 +419,5 @@ el.controls.addEventListener("click", (e) => {
 
 el.againBtn.addEventListener("click", loadBatch);
 
+loadSummary();
 loadBatch();

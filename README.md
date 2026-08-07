@@ -18,11 +18,12 @@ make run              # serves on :8080
 # then open http://localhost:8080
 ```
 
-Progress is saved to `uebung-data.json` in the working directory. Flags:
+Progress is saved to a SQLite database, `uebung.db`, in the working directory.
+Flags:
 
 ```
 -addr       address to listen on (default ":8080")
--data       progress store file (default "uebung-data.json")
+-data       progress database (default "uebung.db")
 -batch      cards per preloaded batch (default 20)
 -retention  FSRS desired retention, 0<r<1 (default 0.9)
 ```
@@ -63,7 +64,7 @@ business/domain/vocab          the noun deck (what the genders are)
   vocabbus, stores/seeddb      embedded curated JSON deck
 business/domain/study          scheduling (when to show each card)
   studybus                     FSRS-driven selection + grading, over opaque lemmas
-  stores/filedb, stores/memdb  JSON-file persistence; in-memory for tests
+  stores/sqlitedb, memdb       SQLite persistence; in-memory for tests
 business/types                 strong types: article, rating, cardstate, userid, langcode
 foundation/fsrs                self-contained FSRS-5 scheduler
 foundation/errs                field-error accumulation for converters
@@ -86,26 +87,37 @@ arrive, that method starts returning a session-derived id and nothing downstream
 changes — the storage schema and every business signature already speak in user
 identity.
 
-### Storage: today and next
+### Storage
 
-Persistence sits behind `studybus.Storer`. The shipping default is `filedb`, a
-stdlib-only JSON store — no driver, no server, fully testable offline. A
-SQLite-backed store is the intended next step and is a drop-in: it implements the
-same `Storer`, so swapping it in is a one-line change in `cmd/uebung/main.go`
-with no change to the business or app layers.
+Persistence sits behind `studybus.Storer`, and the shipping implementation is
+`sqlitedb`. The driver is `modernc.org/sqlite` — pure Go, so there is no CGO and
+no C toolchain in the build and `CGO_ENABLED=0` cross-compiles still work. A
+review writes one row rather than rewriting a whole document, and the
+`(user, lang, lemma)` key is enforced by the database.
 
-> This first cut targets **Go 1.24** and uses the file store because the
-> environment it was built in could reach neither the Go 1.26 toolchain nor the
-> SQLite driver. Both are single, isolated bumps: raise the `go` line in `go.mod`
-> and add a `stores/sqlitedb` package.
+One schema note: the two timestamps are stored as `RFC3339Nano` **text** in UTC,
+not as integers, so a row is readable in a `sqlite3` shell and an unreviewed
+card's zero time reads as `0001-01-01T00:00:00Z`. Because writes normalise to
+UTC, a time comes back as the same instant in a different location —
+`time.Time.Equal` is unaffected, but don't compare a round-tripped `Progress`
+with `==`.
+
+`memdb` remains for tests: it holds Business models directly, needs no file, and
+keeps the whole suite runnable offline.
 
 ## Development
 
 ```bash
-make test     # unit tests + vet + gofmt check
-make lint     # vet + gofmt check
-make build    # ./uebung
+make test        # unit tests + lint + vulnerability scan
+make test-unit   # unit tests alone
+make lint        # vet + gofmt check
+make vuln-check  # govulncheck against the Go vulnerability database
+make build       # ./uebung
 ```
+
+`govulncheck` is pinned as a tool dependency in `go.mod`, so `make vuln-check`
+needs no separate install — but it does query the vulnerability database over
+the network. Offline, run `make test-unit lint`.
 
 The deck genders and example sentences are hand-written; corrections to
 `business/domain/vocab/stores/seeddb/nouns_de.json` are welcome, and a native
