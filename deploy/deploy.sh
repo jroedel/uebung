@@ -72,6 +72,9 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-14}"
 
 # Remote paths are expanded by the remote shell, so APP_DIR may contain ~.
 remote() { ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "$@"; }
+# Run a command from inside the application directory. APP_DIR is relative to the
+# remote home, so anything that needs to reach the app's files must cd first.
+remote_in_app() { remote "cd $APP_DIR && $*"; }
 remote_script() { ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" bash -s; }
 push() { scp -q -P "$SSH_PORT" "$1" "$SSH_USER@$SSH_HOST:$2"; }
 
@@ -335,27 +338,34 @@ fi
 
 # Keep the most recent few; this is a learner's progress, not a compliance
 # archive, and the disk is shared.
-ls -1t backups/uebung-*.db 2>/dev/null | tail -n +\$(( $KEEP_BACKUPS + 1 )) | xargs -r rm -f
+ls -1t backups/uebung-*.db 2>/dev/null | tail -n +\$(( $KEEP_BACKUPS + 1 )) | xargs -r rm -f || true
 ls -1t backups/ | head -3
 EOF
 }
 
+# supervisor_cmd emits a command to be run *from inside* $APP_DIR.
+#
+# It must not embed $APP_DIR. Paths are relative to the remote home, and the remote
+# scripts below already `cd $APP_DIR`, so prefixing again produced
+# public_html/uebung.club/public_html/uebung.club/supervise.sh and a "No such file
+# or directory". Callers use remote_in_app, or are already inside a heredoc that
+# has cd'd.
 supervisor_cmd() {
 	case "$SUPERVISOR" in
 	systemd) printf 'systemctl --user %s uebung.service' "$1" ;;
-	nohup) printf '%s/supervise.sh %s' "$APP_DIR" "$1" ;;
+	nohup) printf './supervise.sh %s' "$1" ;;
 	*) die "SUPERVISOR must be 'systemd' or 'nohup', got '$SUPERVISOR'" ;;
 	esac
 }
 
 cmd_status() {
-	remote "$(supervisor_cmd status)" || true
+	remote_in_app "$(supervisor_cmd status)" || true
 	echo
 	log "health endpoint"
 	curl -fsS --max-time 15 "$PUBLIC_URL/healthz" && echo || warn "healthz did not answer"
 }
 
-cmd_logs() { remote "tail -n ${1:-80} -f $APP_DIR/uebung.log"; }
+cmd_logs() { remote_in_app "tail -n ${1:-80} -f uebung.log"; }
 
 cmd_deploy() {
 	local skip_tests="${1:-no}"
@@ -393,9 +403,19 @@ cmd_deploy() {
 	push "$SCRIPT_DIR/supervise.sh" "$APP_DIR/supervise.sh"
 
 	log "stopping, backing up, swapping binary, starting"
-	remote_script <<EOF
+	local swapped=yes
+	remote_script <<EOF || swapped=no
 set -euo pipefail
 cd $APP_DIR
+
+# Check the new binary is really here BEFORE stopping anything. Everything below
+# is destructive in order -- stop the app, move the old binary aside -- so a
+# missing upload must fail while the service is still happily running rather than
+# after it is down with no binary to run.
+if [ ! -s uebung.new ]; then
+  echo "deploy: uebung.new is missing or empty; refusing to touch the running app" >&2
+  exit 1
+fi
 chmod 700 uebung.new run.sh supervise.sh
 
 $(supervisor_cmd stop) || true
@@ -407,7 +427,7 @@ if [ -f uebung.db ]; then
   stamp=\$(date -u +%Y%m%dT%H%M%SZ)
   cp uebung.db "backups/uebung-\$stamp.db"
   [ -f uebung.db-wal ] && cp uebung.db-wal "backups/uebung-\$stamp.db-wal" || true
-  ls -1t backups/uebung-*.db | tail -n +\$(( $KEEP_BACKUPS + 1 )) | xargs -r rm -f
+  ls -1t backups/uebung-*.db 2>/dev/null | tail -n +\$(( $KEEP_BACKUPS + 1 )) | xargs -r rm -f || true
   echo "backed up to backups/uebung-\$stamp.db"
 fi
 
@@ -420,15 +440,19 @@ mv -f uebung.new uebung
 $(supervisor_cmd start)
 EOF
 
-	log "waiting for health"
 	local ok=no
-	for _ in $(seq 1 20); do
-		if curl -fsS --max-time 10 "$PUBLIC_URL/healthz" >/dev/null 2>&1; then
-			ok=yes
-			break
-		fi
-		sleep 1.5
-	done
+	if [ "$swapped" = "no" ]; then
+		warn "the remote restart failed"
+	else
+		log "waiting for health"
+		for _ in $(seq 1 20); do
+			if curl -fsS --max-time 10 "$PUBLIC_URL/healthz" >/dev/null 2>&1; then
+				ok=yes
+				break
+			fi
+			sleep 1.5
+		done
+	fi
 
 	if [ "$ok" = "yes" ]; then
 		log "healthy: $PUBLIC_URL/healthz"
