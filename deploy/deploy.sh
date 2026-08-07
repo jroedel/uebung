@@ -1,0 +1,395 @@
+#!/usr/bin/env bash
+# Deploy Übung Club.
+#
+# This file is committed; the server's identity is not. Host, account and port
+# come from deploy/deploy.env (gitignored) or from the environment, so nothing
+# here reveals where the app runs. See deploy.env.example.
+#
+# Usage:
+#   deploy/deploy.sh probe        what does this server support? (read-only)
+#   deploy/deploy.sh install      one-time: directories, supervisor, cron, htaccess
+#   deploy/deploy.sh              build, upload, restart, health-check
+#   deploy/deploy.sh --skip-tests skip `make test` (do not make a habit of it)
+#   deploy/deploy.sh backup       take a database backup and leave the app running
+#   deploy/deploy.sh logs         tail the server log
+#   deploy/deploy.sh status       is it up?
+#
+# The deploy is ordered so the risky part is reversible: the previous binary is
+# kept, the database is copied while the app is stopped (so the copy cannot be
+# torn), and a failed health check rolls the binary back and restarts before
+# exiting non-zero.
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Usage is answerable without configuration, so it comes before the checks below.
+case "${1:-}" in
+-h | --help | help)
+	awk '/^# Usage:/{f=1} f && !/^#/{exit} f{sub(/^# ?/, ""); print}' "${BASH_SOURCE[0]}"
+	exit 0
+	;;
+esac
+
+# --- configuration ---------------------------------------------------------
+
+if [ -f "$SCRIPT_DIR/deploy.env" ]; then
+	set -a
+	# shellcheck disable=SC1091
+	. "$SCRIPT_DIR/deploy.env"
+	set +a
+fi
+
+if [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
+	printf '\033[31mxx\033[0m %s\n' \
+		"SSH_HOST and SSH_USER are not set." \
+		"They are kept out of git on purpose. Create the file:" \
+		"    cp deploy/deploy.env.example deploy/deploy.env" \
+		"then fill it in (or export the variables)." >&2
+	exit 1
+fi
+SSH_PORT="${SSH_PORT:-22}"
+
+APP_DIR="${APP_DIR:-~/uebung}"
+DOCROOT="${DOCROOT:-~/public_html/uebung.club}"
+APP_PORT="${APP_PORT:-8402}"
+SUPERVISOR="${SUPERVISOR:-systemd}"
+
+PUBLIC_URL="${PUBLIC_URL:-https://uebung.club}"
+MAIL_FROM="${MAIL_FROM:-hi@uebung.club}"
+SMTP_HOST="${SMTP_HOST:-}"
+SMTP_PORT="${SMTP_PORT:-587}"
+SMTP_USER="${SMTP_USER:-$MAIL_FROM}"
+
+KEEP_BACKUPS="${KEEP_BACKUPS:-14}"
+
+# --- plumbing --------------------------------------------------------------
+
+# Remote paths are expanded by the remote shell, so APP_DIR may contain ~.
+remote() { ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "$@"; }
+remote_script() { ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" bash -s; }
+push() { scp -q -P "$SSH_PORT" "$1" "$SSH_USER@$SSH_HOST:$2"; }
+
+log() { printf '\033[1m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
+die() {
+	printf '\033[31mxx\033[0m %s\n' "$*" >&2
+	exit 1
+}
+
+require() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"; }
+
+# --- subcommands -----------------------------------------------------------
+
+# probe reports what the server can do. Read-only: it changes nothing, so it is
+# safe to run before you have decided anything.
+cmd_probe() {
+	log "probing $SSH_HOST"
+	remote_script <<'PROBE'
+set -u
+printf 'user            : %s (uid %s)\n' "$(id -un)" "$(id -u)"
+printf 'home            : %s\n' "$HOME"
+printf 'kernel          : %s\n' "$(uname -sr)"
+
+printf 'systemd present : '; [ -d /run/systemd/system ] && echo yes || echo no
+printf 'user bus        : '; [ -S "/run/user/$(id -u)/bus" ] && echo yes || echo 'no (systemctl --user will not work)'
+printf 'systemctl --user: '
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  echo yes
+else
+  echo no
+fi
+printf 'lingering       : '
+if command -v loginctl >/dev/null 2>&1; then
+  loginctl show-user "$(id -un)" 2>/dev/null | grep -i '^Linger=' || echo 'unknown (loginctl gave nothing)'
+else
+  echo 'no loginctl'
+fi
+
+printf 'crontab         : '; command -v crontab >/dev/null 2>&1 && echo yes || echo no
+printf 'flock           : '; command -v flock >/dev/null 2>&1 && echo yes || echo 'no (supervise.sh needs it)'
+printf 'setsid          : '; command -v setsid >/dev/null 2>&1 && echo yes || echo 'no (supervise.sh needs it)'
+printf 'sqlite3 cli     : '; command -v sqlite3 >/dev/null 2>&1 && echo yes || echo 'no (backups use cp instead)'
+printf 'curl            : '; command -v curl >/dev/null 2>&1 && echo yes || echo no
+
+echo
+echo "verdict:"
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  echo "  SUPERVISOR=systemd will work. Enable lingering once if Linger=no:"
+  echo "      loginctl enable-linger $(id -un)"
+else
+  echo "  systemctl --user is unavailable. Use SUPERVISOR=nohup."
+fi
+PROBE
+}
+
+# cmd_install prepares the server. Idempotent; safe to re-run.
+cmd_install() {
+	log "creating $APP_DIR"
+	remote "mkdir -p $APP_DIR/backups && chmod 700 $APP_DIR"
+
+	log "uploading run.sh and supervise.sh"
+	push "$SCRIPT_DIR/run.sh" "$APP_DIR/run.sh"
+	push "$SCRIPT_DIR/supervise.sh" "$APP_DIR/supervise.sh"
+	remote "chmod 700 $APP_DIR/run.sh $APP_DIR/supervise.sh"
+
+	install_env
+	install_htaccess
+
+	case "$SUPERVISOR" in
+	systemd) install_systemd ;;
+	nohup) install_cron ;;
+	*) die "SUPERVISOR must be 'systemd' or 'nohup', got '$SUPERVISOR'" ;;
+	esac
+
+	log "install complete — now run: deploy/deploy.sh"
+}
+
+# install_env writes the non-secret settings run.sh needs, and creates a
+# placeholder for the secret WITHOUT overwriting one that already exists.
+install_env() {
+	log "writing $APP_DIR/uebung.env (preserving any existing password)"
+	remote_script <<EOF
+set -euo pipefail
+cd $APP_DIR
+touch uebung.env; chmod 600 uebung.env
+
+# Keep whatever password is already there; replace everything else.
+pw=\$(grep -E '^UEBUNG_SMTP_PASSWORD=' uebung.env 2>/dev/null || true)
+
+cat > uebung.env <<CONF
+# Written by deploy.sh. The password line below is preserved across deploys and
+# is never uploaded from a developer machine.
+UEBUNG_PORT=$APP_PORT
+UEBUNG_LINK_BASE=$PUBLIC_URL/auth/callback
+UEBUNG_MAIL_FROM=$MAIL_FROM
+UEBUNG_SMTP_HOST=$SMTP_HOST
+UEBUNG_SMTP_PORT=$SMTP_PORT
+UEBUNG_SMTP_USER=$SMTP_USER
+CONF
+
+if [ -n "\$pw" ]; then
+  printf '%s\n' "\$pw" >> uebung.env
+else
+  echo '# UEBUNG_SMTP_PASSWORD=  <-- set this by hand, then restart' >> uebung.env
+fi
+chmod 600 uebung.env
+EOF
+
+	if ! remote "grep -qE '^UEBUNG_SMTP_PASSWORD=.+' $APP_DIR/uebung.env"; then
+		warn "no UEBUNG_SMTP_PASSWORD on the server yet."
+		warn "sign-in emails will be written to the log instead of sent. Fix with:"
+		warn "  ssh -p $SSH_PORT $SSH_USER@$SSH_HOST"
+		warn "  printf 'UEBUNG_SMTP_PASSWORD=%s\\n' 'the-password' >> $APP_DIR/uebung.env"
+	fi
+}
+
+install_htaccess() {
+	log "installing .htaccess into $DOCROOT (proxy to 127.0.0.1:$APP_PORT)"
+	local tmp
+	tmp="$(mktemp)"
+	sed "s/__APP_PORT__/$APP_PORT/g" "$SCRIPT_DIR/uebung.htaccess" >"$tmp"
+
+	remote "mkdir -p $DOCROOT"
+	push "$tmp" "$DOCROOT/.htaccess"
+	rm -f "$tmp"
+
+	# A stale challenge directory left by an earlier FileAuth attempt is harmless,
+	# but the docroot should otherwise hold nothing: everything else is served by
+	# the app, and files here would be reachable if the proxy rule ever broke.
+	local strays
+	strays="$(remote "ls -A $DOCROOT | grep -v -e '^.htaccess$' -e '^.well-known$' || true")"
+	if [ -n "$strays" ]; then
+		warn "unexpected files in the document root — they are not served by the app,"
+		warn "and would become reachable if .htaccess were ever removed:"
+		printf '     %s\n' $strays >&2
+	fi
+}
+
+install_systemd() {
+	log "installing user systemd unit"
+	remote "mkdir -p ~/.config/systemd/user"
+	push "$SCRIPT_DIR/uebung.service" "~/.config/systemd/user/uebung.service"
+	remote_script <<'EOF'
+set -euo pipefail
+systemctl --user daemon-reload
+systemctl --user enable uebung.service
+if command -v loginctl >/dev/null 2>&1; then
+  if ! loginctl show-user "$(id -un)" 2>/dev/null | grep -q '^Linger=yes'; then
+    echo "deploy: enabling lingering so the service survives logout and starts at boot"
+    loginctl enable-linger "$(id -un)" || \
+      echo "deploy: WARNING could not enable lingering; the service will stop when you log out" >&2
+  fi
+fi
+EOF
+}
+
+install_cron() {
+	log "installing @reboot and watchdog crontab entries"
+	remote_script <<EOF
+set -euo pipefail
+marker='# uebung-club (managed by deploy.sh)'
+tmp=\$(mktemp)
+crontab -l 2>/dev/null | grep -v "\$marker" > "\$tmp" || true
+{
+  echo "\$marker"
+  echo "@reboot $APP_DIR/supervise.sh start  \$marker"
+  echo "*/5 * * * * $APP_DIR/supervise.sh start  \$marker"
+} >> "\$tmp"
+crontab "\$tmp"
+rm -f "\$tmp"
+crontab -l | grep uebung-club
+EOF
+}
+
+cmd_backup() {
+	log "backing up the database"
+	remote_script <<EOF
+set -euo pipefail
+cd $APP_DIR
+[ -f uebung.db ] || { echo "no database yet, nothing to back up"; exit 0; }
+mkdir -p backups
+stamp=\$(date -u +%Y%m%dT%H%M%SZ)
+
+# sqlite3 .backup is safe against a live writer; plain cp is not, because it can
+# capture a torn page set while WAL is mid-transaction. Prefer the former.
+if command -v sqlite3 >/dev/null 2>&1; then
+  sqlite3 uebung.db ".backup 'backups/uebung-\$stamp.db'"
+  echo "backups/uebung-\$stamp.db (sqlite3 .backup)"
+else
+  cp uebung.db "backups/uebung-\$stamp.db"
+  [ -f uebung.db-wal ] && cp uebung.db-wal "backups/uebung-\$stamp.db-wal" || true
+  echo "backups/uebung-\$stamp.db (cp — no sqlite3 on this host)"
+fi
+
+# Keep the most recent few; this is a learner's progress, not a compliance
+# archive, and the disk is shared.
+ls -1t backups/uebung-*.db 2>/dev/null | tail -n +\$(( $KEEP_BACKUPS + 1 )) | xargs -r rm -f
+ls -1t backups/ | head -3
+EOF
+}
+
+supervisor_cmd() {
+	case "$SUPERVISOR" in
+	systemd) printf 'systemctl --user %s uebung.service' "$1" ;;
+	nohup) printf '%s/supervise.sh %s' "$APP_DIR" "$1" ;;
+	*) die "SUPERVISOR must be 'systemd' or 'nohup', got '$SUPERVISOR'" ;;
+	esac
+}
+
+cmd_status() {
+	remote "$(supervisor_cmd status)" || true
+	echo
+	log "health endpoint"
+	curl -fsS --max-time 15 "$PUBLIC_URL/healthz" && echo || warn "healthz did not answer"
+}
+
+cmd_logs() { remote "tail -n ${1:-80} -f $APP_DIR/uebung.log"; }
+
+cmd_deploy() {
+	local skip_tests="${1:-no}"
+
+	require go
+	require ssh
+	require scp
+
+	if [ "$skip_tests" = "no" ]; then
+		log "make test"
+		(cd "$REPO_DIR" && make test)
+	else
+		warn "skipping tests"
+	fi
+
+	log "building static linux/amd64 binary"
+	# CGO disabled on purpose: the SQLite driver is pure Go, so the result is a
+	# single file with no libc dependency to match against the server's.
+	(cd "$REPO_DIR" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+		go build -trimpath -ldflags='-s -w' -o "$SCRIPT_DIR/.uebung-linux" ./cmd/uebung)
+
+	local size
+	size=$(du -h "$SCRIPT_DIR/.uebung-linux" | cut -f1)
+	log "uploading binary ($size)"
+	push "$SCRIPT_DIR/.uebung-linux" "$APP_DIR/uebung.new"
+	rm -f "$SCRIPT_DIR/.uebung-linux"
+
+	# run.sh may have changed too; keep it in step with the binary.
+	push "$SCRIPT_DIR/run.sh" "$APP_DIR/run.sh"
+	push "$SCRIPT_DIR/supervise.sh" "$APP_DIR/supervise.sh"
+
+	log "stopping, backing up, swapping binary, starting"
+	remote_script <<EOF
+set -euo pipefail
+cd $APP_DIR
+chmod 700 uebung.new run.sh supervise.sh
+
+$(supervisor_cmd stop) || true
+
+# With the writer stopped, a plain copy of the database cannot be torn — which is
+# why the backup happens here and not while the app is live.
+if [ -f uebung.db ]; then
+  mkdir -p backups
+  stamp=\$(date -u +%Y%m%dT%H%M%SZ)
+  cp uebung.db "backups/uebung-\$stamp.db"
+  [ -f uebung.db-wal ] && cp uebung.db-wal "backups/uebung-\$stamp.db-wal" || true
+  ls -1t backups/uebung-*.db | tail -n +\$(( $KEEP_BACKUPS + 1 )) | xargs -r rm -f
+  echo "backed up to backups/uebung-\$stamp.db"
+fi
+
+# Keep the outgoing binary so a failed health check can be rolled back. A rename
+# is used rather than a write-in-place: replacing a running executable's bytes
+# gives ETXTBSY, swapping the inode does not.
+[ -f uebung ] && mv -f uebung uebung.prev || true
+mv -f uebung.new uebung
+
+$(supervisor_cmd start)
+EOF
+
+	log "waiting for health"
+	local ok=no
+	for _ in $(seq 1 20); do
+		if curl -fsS --max-time 10 "$PUBLIC_URL/healthz" >/dev/null 2>&1; then
+			ok=yes
+			break
+		fi
+		sleep 1.5
+	done
+
+	if [ "$ok" = "yes" ]; then
+		log "healthy: $PUBLIC_URL/healthz"
+		remote "cd $APP_DIR && rm -f uebung.prev"
+		log "deployed"
+
+		return 0
+	fi
+
+	warn "health check failed — rolling back"
+	remote_script <<EOF
+set -euo pipefail
+cd $APP_DIR
+$(supervisor_cmd stop) || true
+if [ -f uebung.prev ]; then
+  mv -f uebung uebung.failed
+  mv -f uebung.prev uebung
+  echo "restored the previous binary (the failed one is kept as uebung.failed)"
+else
+  echo "no previous binary to restore" >&2
+fi
+$(supervisor_cmd start) || true
+EOF
+
+	remote "tail -n 40 $APP_DIR/uebung.log" || true
+	die "deploy failed and was rolled back"
+}
+
+# --- entry point -----------------------------------------------------------
+
+case "${1:-deploy}" in
+probe) cmd_probe ;;
+install) cmd_install ;;
+backup) cmd_backup ;;
+status) cmd_status ;;
+logs) cmd_logs "${2:-80}" ;;
+deploy) cmd_deploy no ;;
+--skip-tests) cmd_deploy yes ;;
+*) die "unknown command '$1' (try: probe, install, deploy, backup, status, logs)" ;;
+esac

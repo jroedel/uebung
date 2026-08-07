@@ -1,0 +1,43 @@
+# User-level systemd unit for Übung Club.
+#
+# Installed by deploy.sh to ~/.config/systemd/user/uebung.service when
+# SUPERVISOR=systemd. No root anywhere; %h expands to the account's home.
+#
+# Lingering must be enabled once, or the service stops when you log out and never
+# starts at boot:
+#
+#     loginctl enable-linger <account>
+#
+# If `loginctl` is unavailable on this host, use SUPERVISOR=nohup instead.
+
+[Unit]
+Description=Übung Club — der/die/das trainer
+Documentation=https://github.com/jroedel/uebung
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/uebung
+ExecStart=%h/uebung/run.sh
+
+# run.sh sources uebung.env itself, so the secret is read the same way under both
+# supervisors and there is only one place it can be got wrong.
+
+Restart=always
+RestartSec=3
+
+# SIGINT is what the app's graceful-shutdown handler waits for; the default
+# SIGTERM would skip draining in-flight requests and closing the database
+# cleanly.
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+# Cheap hardening that needs no privilege to grant.
+NoNewPrivileges=true
+PrivateTmp=true
+
+StandardOutput=append:%h/uebung/uebung.log
+StandardError=append:%h/uebung/uebung.log
+
+[Install]
+WantedBy=default.target

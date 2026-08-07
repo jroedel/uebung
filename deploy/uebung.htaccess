@@ -1,0 +1,41 @@
+# Übung Club — Apache front end for the Go app.
+#
+# Installed by deploy.sh as .htaccess in the document root. Apache terminates TLS
+# with the konsoleH Let's Encrypt certificate and hands everything to the app on
+# loopback, so the app itself never speaks TLS and is never directly reachable.
+#
+# ProxyPass is illegal in .htaccess; the [P] flag on a RewriteRule is the
+# supported way to do this on konsoleH.
+
+RewriteEngine On
+
+# ACME first, and this ordering is the whole point.
+#
+# konsoleH can validate certificates two ways: DNSAuth (now that Hetzner holds
+# the zone) and FileAuth, which writes a challenge file into THIS docroot. A
+# catch-all [P] below would hand that path to the Go app, which knows nothing
+# about it, and FileAuth would fail. tmpcontrol.online is in exactly that state:
+# its /.well-known/acme-challenge/ returns 503 because the proxy swallows it.
+#
+# So: serve /.well-known/ from disk and stop.
+RewriteCond %{REQUEST_URI} ^/\.well-known/ [NC]
+RewriteRule ^ - [L]
+
+# Everything else goes to the app. QSA keeps the query string, which carries the
+# ?lang= parameters and the sign-in token.
+RewriteRule ^(.*)$ http://127.0.0.1:__APP_PORT__/$1 [P,QSA,L]
+
+<IfModule mod_headers.c>
+  # HSTS, gated on HTTPS: RFC 6797 says a browser ignores the header over plain
+  # HTTP anyway, and sending it there just muddies the response.
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
+
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+  # Tell the app the browser's real scheme. It no longer decides cookie security
+  # from this — that is fixed at startup from -link-base — but it keeps the
+  # forwarded picture honest, and `set` rather than `setifempty` means a client
+  # cannot supply its own value.
+  RequestHeader set X-Forwarded-Proto "https" env=HTTPS
+</IfModule>
