@@ -29,6 +29,15 @@ if [ -z "${UEBUNG_SMTP_PASSWORD:-}" ]; then
 	echo "run.sh: WARNING no UEBUNG_SMTP_PASSWORD — sign-in links will be written to the log, not emailed" >&2
 fi
 
+# Record OUR pid, then exec: exec replaces the process image without changing the
+# PID, so this file ends up holding the app's real pid.
+#
+# The supervisor cannot do this itself. `setsid nohup ./run.sh &` gives it the pid
+# of setsid, which forks and exits — off by one from the process that matters. A
+# pid file pointing at a dead process makes the watchdog believe the app is down
+# and start another one every five minutes.
+echo $$ >"$PWD/uebung.pid"
+
 exec ./uebung \
 	-addr "127.0.0.1:${UEBUNG_PORT}" \
 	-data "$PWD/uebung.db" \

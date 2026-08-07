@@ -36,11 +36,33 @@ start() {
 
 	# setsid detaches from the cron/ssh session, so the app is not killed when the
 	# invoking shell exits — which is the whole failure mode of a bare `&`.
-	setsid nohup ./run.sh >>"$LOGFILE" 2>&1 &
-	echo $! >"$PIDFILE"
-	sleep 1
+	#
+	# </dev/null matters as much as the redirects on stdout/stderr, and is easy to
+	# forget: while the child still holds the inherited stdin, an invoking ssh
+	# keeps its channel open waiting for EOF and never returns. That hangs
+	# `deploy.sh` right after it starts the app — which is exactly how this was
+	# found.
+	# The pid file is written by run.sh, not from $! here: setsid forks, so $! is
+	# the wrapper that exits rather than the app.
+	rm -f "$PIDFILE"
+	# 9>&- closes the lock fd in the child. Without it the app inherits fd 9 and so
+	# holds the flock for its entire lifetime, and the next `start` — a deploy, or
+	# the five-minute watchdog — blocks forever on a lock the running app will
+	# never release.
+	setsid nohup ./run.sh </dev/null >>"$LOGFILE" 2>&1 9>&- &
 
-	running
+	# Wait for run.sh to exec the binary and claim the pid file.
+	for _ in $(seq 1 25); do
+		if running; then
+			return 0
+		fi
+		sleep 0.2
+	done
+
+	echo "supervise: the app did not come up; last log lines:" >&2
+	tail -n 20 "$LOGFILE" >&2 2>/dev/null || true
+
+	return 1
 }
 
 stop() {
@@ -89,7 +111,13 @@ if [ "$1" = "status" ]; then
 fi
 
 exec 9>"$LOCKFILE"
-flock 9
+
+# Bounded wait, so a lock held by something unexpected degrades into a clear
+# failure rather than a hung deploy or a cron job that never returns.
+if ! flock -w 30 9; then
+	echo "supervise: could not acquire $LOCKFILE within 30s; another operation is in progress" >&2
+	exit 1
+fi
 
 case "$1" in
 start) start ;;
