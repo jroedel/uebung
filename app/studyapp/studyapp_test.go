@@ -159,6 +159,29 @@ func TestManifestAndIconsAreServed(t *testing.T) {
 	}
 }
 
+// http.FileServer answers "/index.html" with a 301 to "./" to canonicalise the
+// URL. Behind a proxy whose DirectoryIndex maps "/" onto index.html — Apache's
+// default — that redirect points back at the request that caused it, and the home
+// page becomes an infinite loop. It happened in production: every other route
+// worked and only "/" was unreachable, 50 redirects deep.
+func TestIndexHTMLIsServedNotRedirected(t *testing.T) {
+	h := newServerWithStatic(t)
+
+	for _, path := range []string{"/", "/index.html"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; Location=%q", rec.Code, rec.Header().Get("Location"))
+			}
+			if !strings.Contains(rec.Body.String(), "Übung Club") {
+				t.Errorf("%s did not serve the client HTML", path)
+			}
+		})
+	}
+}
+
 func TestBatchReturnsPreloadedCardsWithAnswers(t *testing.T) {
 	h := newServer(t)
 
