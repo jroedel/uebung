@@ -222,6 +222,10 @@ gitignored.
 > [AGENTS.md](AGENTS.md), and [production_recon.md](production_recon.md) for what
 > is already known about the server without needing to look.
 
+[DEPLOYING.md](DEPLOYING.md) is the reusable version of all this — the ordered
+setup, what a Go app has to do to live behind konsoleH's Apache, the file modes, and
+a symptom-to-cause table. Start there for a *new* project on the same host.
+
 ```bash
 cp deploy/deploy.env.example deploy/deploy.env   # then fill it in
 deploy/deploy.sh probe      # what does this server support? read-only

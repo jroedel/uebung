@@ -43,7 +43,8 @@
 
 `production_recon.md` records what is already known about the server, so that
 questions about it can usually be answered without asking anyone to run anything.
-Read it before proposing deployment work.
+`DEPLOYING.md` is the procedure and the pitfalls. Read both before proposing
+deployment work.
 
 ## Feature development — mandatory skills
 

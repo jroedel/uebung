@@ -6,6 +6,9 @@ planned without anyone having to go and look.
 **Read the "Production access — do not" section of [AGENTS.md](AGENTS.md) first.
 Agents must not SSH to this host.** This file exists so you do not need to.
 
+For *doing* a deployment rather than knowing about the machine, see
+[DEPLOYING.md](DEPLOYING.md).
+
 **Deliberately omitted:** the SSH account name, the SSH port, and the connection
 string. Those live in `deploy/deploy.env`, which is gitignored, because *this
 repository is public*. Everything below is either already publicly discoverable
