@@ -29,6 +29,24 @@ const SWIPE_THRESHOLD = 80; // px of travel before a drag counts as a swipe.
 const FAST_MS = 2000; // under this, a correct answer is "easy".
 const SLOW_MS = 5000; // over this, a correct answer is only "hard".
 
+// How long an answered card stays on screen. These are deliberately asymmetric:
+// a hit needs only long enough to confirm you were right, while a miss is the
+// one moment in the whole round where learning can actually happen, so it gets
+// room to be read.
+//
+// A missed card holds still first — the article has to land before anything
+// moves — and only then travels, slowly, in the direction that would have been
+// correct. The fade is delayed in CSS to the back half of that journey so the
+// answer stays legible while it goes. (Before this, the card faded out in 280ms
+// while the answer was still fading in over 150ms, which left about a quarter
+// second of readable text and then 370ms of empty stage.)
+//
+// None of this is a floor on your pace: any input during a reveal skips the
+// rest of it, so knowing the answer still lets you move at speed.
+const HIT_HOLD_MS = 900;   // total on-screen time for a correct answer.
+const MISS_HOLD_MS = 500;  // still, fully opaque, while the answer registers.
+const MISS_FLING_MS = 1100; // slow travel; must match .card.slow-exit in the CSS.
+
 const el = {
   deck: document.getElementById("deck"),
   controls: document.getElementById("controls"),
@@ -53,11 +71,13 @@ const el = {
 };
 
 const state = {
-  cards: [],     // {lemma, article, gloss}
+  cards: [],     // {lemma, article, gloss, example, example_en}
   index: 0,      // current card
   results: [],   // {lemma, rating}
   shownAt: 0,    // when the current card was first shown
   locked: false, // true while an answer animates, to swallow double input
+  advance: null, // while a reveal is on screen: run it early to skip the rest
+  timers: [],    // pending reveal timeouts, cleared if the reveal is cut short
 };
 
 // --- data ------------------------------------------------------------------
@@ -65,6 +85,11 @@ const state = {
 async function loadBatch() {
   showStatus("Loading your cards…");
   hide(el.panel);
+  // Drop any reveal still in flight, so a timer from the last batch cannot
+  // advance an index that now points into a fresh set of cards.
+  clearTimers();
+  state.advance = null;
+  state.locked = false;
   try {
     const res = await fetch(API.batch(API.lang, API.limit), { headers: { Accept: "application/json" } });
     if (!res.ok) throw new Error(`batch failed: ${res.status}`);
@@ -149,6 +174,8 @@ function buildCard(data, behind) {
     <p class="prompt">der, die, or das?</p>
     <div class="feedback"></div>
     <div class="gloss"></div>
+    <p class="example" lang="de"></p>
+    <p class="example-en" lang="en"></p>
   `;
   return card;
 }
@@ -168,7 +195,15 @@ function applySummary(sum) {
 // --- answering -------------------------------------------------------------
 
 function answer(article) {
-  if (state.locked) return;
+  // A press while an answer is on screen means "I've got it" — skip the rest of
+  // the reveal instead of swallowing the input. Without this the longer miss
+  // reveal would be a tax on every miss rather than a floor for the ones that
+  // need it.
+  if (state.locked) {
+    if (state.advance) state.advance();
+    return;
+  }
+
   const card = state.cards[state.index];
   if (!card) return;
 
@@ -179,9 +214,35 @@ function answer(article) {
   state.results.push({ lemma: card.lemma, rating });
 
   revealFeedback(correct, card);
-  flingCard(DIR[card.article] || DIR[article]);
 
-  window.setTimeout(() => {
+  const direction = DIR[card.article] || DIR[article];
+  if (correct) {
+    flingCard(direction);
+    scheduleAdvance(HIT_HOLD_MS);
+    return;
+  }
+
+  // Missed: show the sentence, hold still so the article can be read, then leave
+  // slowly. The card is only told to move once the hold is over, so the slow
+  // transition applies to the whole journey.
+  revealExample(card);
+  markSlowExit();
+  after(() => flingCard(direction), MISS_HOLD_MS);
+  scheduleAdvance(MISS_HOLD_MS + MISS_FLING_MS);
+}
+
+// after runs fn later and records the timer so a skipped reveal can cancel it.
+function after(fn, delay) {
+  state.timers.push(window.setTimeout(fn, delay));
+}
+
+// scheduleAdvance arms the move to the next card and exposes it as state.advance
+// so an impatient learner can trigger it early. It is idempotent: whichever of
+// the timer or the early call lands first, the other becomes a no-op.
+function scheduleAdvance(delay) {
+  state.advance = () => {
+    clearTimers();
+    state.advance = null;
     state.index += 1;
     state.locked = false;
     clearHints();
@@ -190,7 +251,14 @@ function answer(article) {
     } else {
       renderStack();
     }
-  }, 650);
+  };
+
+  after(() => state.advance && state.advance(), delay);
+}
+
+function clearTimers() {
+  for (const t of state.timers) window.clearTimeout(t);
+  state.timers = [];
 }
 
 function gradeBySpeed(ms) {
@@ -209,6 +277,32 @@ function revealFeedback(correct, card) {
   gloss.textContent = card.gloss;
   const band = top.querySelector(`.band.${card.article}`);
   if (band) band.style.opacity = "1";
+}
+
+// revealExample puts the missed noun's sentence on the card itself. It is already
+// on the card data — the batch preloads it — so this costs no request, and it
+// turns the pause into the correction rather than dead waiting time. The same
+// sentence appears again in the end-of-round list.
+function revealExample(card) {
+  const top = el.deck.lastElementChild;
+  if (!top) return;
+
+  const de = top.querySelector(".example");
+  const en = top.querySelector(".example-en");
+  if (!de || !en) return;
+
+  // The sentence uses the noun in a natural case, so its article may be declined
+  // and need not be the one being drilled; the nominative follows for reference.
+  de.textContent = `${card.example} (${card.article} ${card.lemma})`;
+  en.textContent = card.example_en;
+  top.classList.add("show-example");
+}
+
+// markSlowExit switches the top card to the slow, late-fading transition used
+// for misses. It must be set before the transform is applied.
+function markSlowExit() {
+  const top = el.deck.lastElementChild;
+  if (top) top.classList.add("slow-exit");
 }
 
 function flingCard(direction) {

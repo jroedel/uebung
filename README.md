@@ -35,6 +35,11 @@ Flags:
    its correct article, gloss, and example sentence.
 2. You answer every card locally. A miss is graded *again*; a hit is graded by
    how fast it came (*easy* / *good* / *hard*). Nothing hits the network.
+   A hit clears in 0.9s. A miss holds still, shows the sentence, and then drifts
+   away slowly in the direction that would have been right — about 1.6s in all,
+   because a miss is the one moment in a round where there is anything to learn.
+   Any key or tap skips the rest of a reveal, so knowing the answer still lets
+   you move at speed.
 3. When the batch is done the client flushes every grade in one
    `POST /api/grade`. The server runs each through FSRS and persists the result.
 4. The round ends on the nouns you got wrong, each shown in a sentence with its
