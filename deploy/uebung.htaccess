@@ -7,6 +7,15 @@
 # ProxyPass is illegal in .htaccess; the [P] flag on a RewriteRule is the
 # supported way to do this on konsoleH.
 
+# Do not let Apache map "/" onto an index file.
+#
+# The app owns every URL here, and DirectoryIndex turning "/" into "/index.html"
+# before the proxy is what produced an infinite redirect loop on the home page:
+# http.FileServer canonicalises "/index.html" to "./", which points straight back
+# at "/". The app no longer redirects there either, so this is the second of two
+# independent fixes for the same loop.
+DirectoryIndex disabled
+
 RewriteEngine On
 
 # ACME first, and this ordering is the whole point.

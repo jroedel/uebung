@@ -184,6 +184,20 @@ SpamCop or SORBS.
 Not configured, all modest positives: DNSSEC (no DS at the registry), MTA-STS,
 TLS-RPT. MTA-STS needs an HTTPS-served policy file, which this host can now do.
 
+### The home-page redirect loop
+
+Worth knowing because every other route worked and only `/` was broken, 50
+redirects deep, on an otherwise healthy deployment.
+
+`http.FileServer` answers `/index.html` with a **301 to `./`** to canonicalise the
+URL. Apache's `DirectoryIndex` maps `/` onto `index.html` before the proxy rule
+runs, so the app's canonical redirect pointed straight back at the request that
+caused it.
+
+Fixed on both sides independently: the app serves `/index.html` rather than
+redirecting, and the `.htaccess` sets `DirectoryIndex disabled`, since the app owns
+every URL here.
+
 ## konsoleH quirks that will waste your time
 
 1. **The panel caches its DNS view.** Status lines lag reality badly — it showed

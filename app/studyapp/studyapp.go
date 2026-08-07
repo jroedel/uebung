@@ -116,10 +116,37 @@ func (a *App) Handler() http.Handler {
 
 	if a.static != nil {
 		// "GET /" is the least specific pattern, so the routes above still win.
-		mux.Handle("GET /", http.FileServer(http.FS(a.static)))
+		mux.Handle("GET /", a.staticHandler())
 	}
 
 	return mux
+}
+
+// staticHandler serves the embedded client.
+//
+// It exists to defuse one behaviour of http.FileServer: a request for
+// "/index.html" is answered with a 301 to "./" to canonicalise the URL. On its own
+// that is harmless, but behind a reverse proxy whose DirectoryIndex maps "/" onto
+// index.html — which Apache does by default — the redirect points back at the
+// request that produced it, and the home page becomes an infinite loop. The app
+// was live and every other route worked; only "/" was unreachable.
+//
+// Mapping the path to "/" internally serves the same bytes with a 200 and leaves
+// nothing for a proxy to disagree with.
+func (a *App) staticHandler() http.Handler {
+	files := http.FileServer(http.FS(a.static))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/index.html" {
+			// Clone rather than mutate: the request is not ours to modify, and the
+			// logging middleware still reports the path as it was asked for.
+			clone := r.Clone(r.Context())
+			clone.URL.Path = "/"
+			r = clone
+		}
+
+		files.ServeHTTP(w, r)
+	})
 }
 
 // handleHealthz reports whether the app can serve, not merely whether it is
