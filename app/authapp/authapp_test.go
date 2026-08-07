@@ -2,6 +2,7 @@ package authapp_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,8 +15,10 @@ import (
 
 	"github.com/jroedel/uebung/app/authapp"
 	"github.com/jroedel/uebung/business/domain/identity/identitybus"
+	"github.com/jroedel/uebung/business/domain/identity/nicknamer"
 	"github.com/jroedel/uebung/business/domain/identity/stores/memdb"
 	"github.com/jroedel/uebung/business/types/email"
+	"github.com/jroedel/uebung/business/types/nickname"
 	"github.com/jroedel/uebung/business/types/userid"
 )
 
@@ -36,10 +39,20 @@ func newFixture(t *testing.T, secureCookies bool) *fixture {
 	t.Helper()
 
 	mailer := &captureMailer{}
+
+	// The real generator, not a stub: these tests exercise the HTTP surface end
+	// to end, and a suggestion that failed to parse would be a bug worth
+	// catching here as much as anywhere.
+	namer, err := nicknamer.New(nicknamer.Config{})
+	if err != nil {
+		t.Fatalf("nicknamer.New: %v", err)
+	}
+
 	var n int
 	identity, err := identitybus.NewBusiness(identitybus.Config{
 		Storer:   memdb.New(),
 		Mailer:   mailer,
+		Namer:    namer,
 		LinkBase: "https://uebung.club/auth/callback",
 		Now:      time.Now,
 		NewID: func() (userid.UserID, error) {
@@ -358,5 +371,246 @@ func TestMeAndLogout(t *testing.T) {
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store: auth responses must not be cached", got)
+	}
+}
+
+// --- nicknames --------------------------------------------------------------
+
+// signIn runs the whole confirm-then-post flow and returns the session cookie.
+func (f *fixture) signIn(t *testing.T, addr string) *http.Cookie {
+	t.Helper()
+
+	tok := f.token(t, addr)
+
+	get := httptest.NewRecorder()
+	f.h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/auth/callback?token="+tok, nil))
+
+	confirm := cookie(get, "__Host-uebung_confirm")
+	if confirm == nil {
+		t.Fatal("no confirmation cookie was set")
+	}
+
+	nonce := regexp.MustCompile(`name="nonce" value="([^"]+)"`).FindStringSubmatch(get.Body.String())
+	if nonce == nil {
+		t.Fatal("no nonce in the confirmation form")
+	}
+
+	post := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/auth/callback",
+		strings.NewReader(url.Values{"token": {tok}, "nonce": {nonce[1]}}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.AddCookie(confirm)
+	f.h.ServeHTTP(post, r)
+
+	session := cookie(post, authapp.SessionCookieName)
+	if session == nil {
+		t.Fatalf("no session cookie after confirming; status = %d", post.Code)
+	}
+
+	return session
+}
+
+// as issues a request carrying a session cookie.
+func (f *fixture) as(t *testing.T, session *http.Cookie, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := jsonReq(method, target, body)
+	r.AddCookie(session)
+
+	rec := httptest.NewRecorder()
+	f.h.ServeHTTP(rec, r)
+
+	return rec
+}
+
+// me decodes /auth/me for a session.
+func (f *fixture) me(t *testing.T, session *http.Cookie) map[string]any {
+	t.Helper()
+
+	rec := f.as(t, session, http.MethodGet, "/auth/me", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/auth/me status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding /auth/me: %v", err)
+	}
+
+	return body
+}
+
+// A learner who has just signed in for the first time has no name, and gets a
+// suggestion to put on the skip button — both in the one response the client
+// already makes on load.
+func TestMeOffersASuggestionUntilANameIsChosen(t *testing.T) {
+	f := newFixture(t, true)
+	session := f.signIn(t, "learner@example.com")
+
+	body := f.me(t, session)
+
+	if got := body["nickname"]; got != "" {
+		t.Errorf("nickname = %v, want empty for a fresh account", got)
+	}
+
+	suggestion, _ := body["suggestion"].(string)
+	if suggestion == "" {
+		t.Fatal("no suggestion offered to an account without a nickname")
+	}
+
+	// The suggestion has to be a name the learner could have typed themselves,
+	// or the skip button leads somewhere the set endpoint would reject.
+	if _, err := nickname.Parse(suggestion); err != nil {
+		t.Errorf("suggestion %q is not a valid nickname: %v", suggestion, err)
+	}
+}
+
+func TestSetNicknameThenMeReportsIt(t *testing.T) {
+	f := newFixture(t, true)
+	session := f.signIn(t, "learner@example.com")
+
+	rec := f.as(t, session, http.MethodPost, "/auth/nickname", `{"nickname":"Blaue Eule"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/auth/nickname status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	body := f.me(t, session)
+	if got := body["nickname"]; got != "Blaue Eule" {
+		t.Errorf("nickname = %v, want %q", got, "Blaue Eule")
+	}
+
+	// Nothing to suggest to someone who has a name.
+	if got, ok := body["suggestion"]; ok && got != "" {
+		t.Errorf("suggestion = %v, want none once a name is set", got)
+	}
+}
+
+// Renaming is the same endpoint, and this PR ships it.
+func TestNicknameCanBeChanged(t *testing.T) {
+	f := newFixture(t, true)
+	session := f.signIn(t, "learner@example.com")
+
+	for _, name := range []string{"Blaue Eule", "Dunkler Hund"} {
+		rec := f.as(t, session, http.MethodPost, "/auth/nickname", `{"nickname":"`+name+`"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("setting %q: status = %d, body=%s", name, rec.Code, rec.Body)
+		}
+	}
+
+	if got := f.me(t, session)["nickname"]; got != "Dunkler Hund" {
+		t.Errorf("nickname = %v after renaming, want %q", got, "Dunkler Hund")
+	}
+}
+
+func TestSetNicknameRejectsInvalidNames(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"too short", `{"nickname":"Ei"}`, http.StatusBadRequest},
+		{"bad characters", `{"nickname":"Blaue_Eule"}`, http.StatusBadRequest},
+		{"homoglyph", `{"nickname":"Jеff Blau"}`, http.StatusBadRequest},
+		{"reserved", `{"nickname":"Admin"}`, http.StatusBadRequest},
+		{"profane", `{"nickname":"Scheisse"}`, http.StatusBadRequest},
+		{"not json", `nickname=Blaue`, http.StatusBadRequest},
+		{"unknown field", `{"nick":"Blaue Eule"}`, http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t, true)
+			session := f.signIn(t, "learner@example.com")
+
+			rec := f.as(t, session, http.MethodPost, "/auth/nickname", tt.body)
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d; body=%s", rec.Code, tt.want, rec.Body)
+			}
+		})
+	}
+}
+
+// A taken name is a 409, not a 400: the request was fine, the world was not.
+// Unlike the sign-in path there is nothing to conceal — a nickname is public —
+// so the response says plainly what happened.
+func TestSetNicknameConflictsAre409(t *testing.T) {
+	f := newFixture(t, true)
+
+	first := f.signIn(t, "first@example.com")
+	second := f.signIn(t, "second@example.com")
+
+	if rec := f.as(t, first, http.MethodPost, "/auth/nickname", `{"nickname":"Blaue Eule"}`); rec.Code != http.StatusOK {
+		t.Fatalf("first claim: status = %d, body=%s", rec.Code, rec.Body)
+	}
+
+	rec := f.as(t, second, http.MethodPost, "/auth/nickname", `{"nickname":"blaue-eule"}`)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("second claim: status = %d, want 409; body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestSkipAssignsAName(t *testing.T) {
+	f := newFixture(t, true)
+	session := f.signIn(t, "learner@example.com")
+
+	rec := f.as(t, session, http.MethodPost, "/auth/nickname/skip", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/auth/nickname/skip status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	assigned, _ := f.me(t, session)["nickname"].(string)
+	if assigned == "" {
+		t.Fatal("skipping left the account without a name")
+	}
+	if _, err := nickname.Parse(assigned); err != nil {
+		t.Errorf("assigned name %q is not a valid nickname: %v", assigned, err)
+	}
+}
+
+// "Skip" must never overwrite a name someone chose.
+func TestSkipDoesNotReplaceAnExistingName(t *testing.T) {
+	f := newFixture(t, true)
+	session := f.signIn(t, "learner@example.com")
+
+	if rec := f.as(t, session, http.MethodPost, "/auth/nickname", `{"nickname":"Blaue Eule"}`); rec.Code != http.StatusOK {
+		t.Fatalf("setting a name: status = %d, body=%s", rec.Code, rec.Body)
+	}
+
+	if rec := f.as(t, session, http.MethodPost, "/auth/nickname/skip", ""); rec.Code != http.StatusOK {
+		t.Fatalf("/auth/nickname/skip status = %d, body=%s", rec.Code, rec.Body)
+	}
+
+	if got := f.me(t, session)["nickname"]; got != "Blaue Eule" {
+		t.Errorf("nickname = %v after skipping, want the chosen %q", got, "Blaue Eule")
+	}
+}
+
+// Both endpoints change an account, so both need a session. Without this they
+// would be an unauthenticated way to write to whichever account the request
+// happened to name.
+func TestNicknameEndpointsRequireASession(t *testing.T) {
+	f := newFixture(t, true)
+
+	for _, target := range []string{"/auth/nickname", "/auth/nickname/skip"} {
+		t.Run(target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			f.h.ServeHTTP(rec, jsonReq(http.MethodPost, target, `{"nickname":"Blaue Eule"}`))
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401", rec.Code)
+			}
+		})
+	}
+}
+
+// The response says who is signed in, so it must not be cached anywhere on the
+// way back — the same rule the rest of this surface follows.
+func TestNicknameResponsesAreNotCached(t *testing.T) {
+	f := newFixture(t, true)
+	session := f.signIn(t, "learner@example.com")
+
+	rec := f.as(t, session, http.MethodPost, "/auth/nickname", `{"nickname":"Blaue Eule"}`)
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
 }

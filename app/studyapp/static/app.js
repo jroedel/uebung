@@ -18,6 +18,8 @@ const API = {
   me: "/auth/me",
   requestLink: "/auth/request",
   logout: "/auth/logout",
+  nickname: "/auth/nickname",
+  skipNickname: "/auth/nickname/skip",
 };
 
 // Direction → article. Left = der, Up = das, Right = die. Chosen so the two
@@ -63,7 +65,19 @@ const el = {
   panelBody: document.getElementById("panel-body"),
   account: document.getElementById("account"),
   accountEmail: document.getElementById("account-email"),
+  accountNickname: document.getElementById("account-nickname"),
+  renameBtn: document.getElementById("rename-btn"),
   signoutBtn: document.getElementById("signout-btn"),
+  nicknamePanel: document.getElementById("nickname-panel"),
+  nicknameTitle: document.getElementById("nickname-title"),
+  nicknameBody: document.getElementById("nickname-body"),
+  nicknameForm: document.getElementById("nickname-form"),
+  nicknameInput: document.getElementById("nickname-input"),
+  nicknameBtn: document.getElementById("nickname-btn"),
+  nicknameSkipLine: document.getElementById("nickname-skip-line"),
+  nicknameSkipBtn: document.getElementById("nickname-skip-btn"),
+  nicknameCancelLine: document.getElementById("nickname-cancel-line"),
+  nicknameCancelBtn: document.getElementById("nickname-cancel-btn"),
   signinPanel: document.getElementById("signin-panel"),
   signinForm: document.getElementById("signin-form"),
   signinEmail: document.getElementById("signin-email"),
@@ -119,10 +133,27 @@ async function start() {
   // Show the address. A session can be started by following a link someone else
   // sent, so "which account am I in" has to be answerable at a glance.
   el.accountEmail.textContent = me.email;
+  showAccount(me);
   show(el.account);
+
+  // A learner with no name yet gets asked before the deck, because this is the
+  // one moment they are already stopped and reading. It is a prompt and not a
+  // gate: skipping takes the suggested name and carries straight on.
+  if (!me.nickname) {
+    showNicknamePrompt(me.suggestion);
+
+    return;
+  }
 
   loadSummary();
   loadBatch();
+}
+
+// showAccount renders the header's identity line. The nickname leads because it
+// is the public one; "Change" appears only once there is something to change.
+function showAccount(me) {
+  el.accountNickname.textContent = me.nickname || "";
+  el.renameBtn.hidden = !me.nickname;
 }
 
 // showSignIn presents the email form. The expired case is flagged by the auth
@@ -133,6 +164,7 @@ function showSignIn() {
   hide(el.account);
   hide(el.controls);
   hide(el.stats);
+  hide(el.nicknamePanel);
   clearStack();
 
   if (new URLSearchParams(location.search).get("signin") === "expired") {
@@ -184,12 +216,175 @@ async function requestLink(e) {
   }
 }
 
+// --- nickname ---------------------------------------------------------------
+
+// showNicknamePrompt asks for a display name.
+//
+// suggestion is the name the server would assign if the learner skips, and it is
+// shown on the skip button rather than described in the abstract: "Rather not
+// choose? Be Blaue Eule" is a decision someone can make at a glance, where
+// "skip" alone asks them to accept an unknown.
+//
+// The suggestion is not reserved. If it has been taken by the time they press
+// the button, the server quietly assigns a different one — which is why the
+// button posts nothing and the assigned name is read back from the response.
+function showNicknamePrompt(suggestion) {
+  hide(el.statusPanel);
+  hide(el.panel);
+  hide(el.controls);
+  hide(el.stats);
+  clearStack();
+
+  el.nicknameTitle.textContent = "Pick a nickname";
+  el.nicknameBody.textContent =
+    "This is the name other learners will see on the leaderboard — so it need not be your real one.";
+  el.nicknameInput.value = "";
+  hide(el.nicknameCancelLine); // there is nothing to go back to yet.
+
+  // No suggestion means the server could not produce one just now. The prompt
+  // still works; only the skip offer goes away, since there would be no name to
+  // put on it.
+  if (suggestion) {
+    el.nicknameSkipBtn.textContent = `Be “${suggestion}”`;
+    show(el.nicknameSkipLine);
+  } else {
+    hide(el.nicknameSkipLine);
+  }
+
+  show(el.nicknamePanel);
+  el.nicknameInput.focus();
+}
+
+// openRename is what the header's "Change" does.
+//
+// Opening the panel clears the card stack, and answers live in the browser until
+// the batch ends, so anything already answered is sent first. Renaming should
+// never cost a learner their round — and the flush is cheap, since it is the
+// same request the end of a batch makes anyway.
+async function openRename() {
+  if (state.results.length) {
+    await flush();
+    state.results = [];
+  }
+
+  showRename(el.accountNickname.textContent);
+}
+
+// showRename reuses the same panel for changing an existing name. There is no
+// skip here: the name is already set, and "skip" would have nothing to mean.
+// There is a cancel instead, because unlike the first-time prompt this panel was
+// opened deliberately and has somewhere to go back to.
+function showRename(current) {
+  hide(el.statusPanel);
+  hide(el.panel);
+  hide(el.controls);
+  hide(el.stats);
+  clearStack();
+  hide(el.nicknameSkipLine);
+  show(el.nicknameCancelLine);
+
+  el.nicknameTitle.textContent = "Change your nickname";
+  el.nicknameBody.textContent = "Other learners see this name on the leaderboard.";
+  el.nicknameInput.value = current || "";
+
+  show(el.nicknamePanel);
+  el.nicknameInput.focus();
+  el.nicknameInput.select();
+}
+
+async function submitNickname(e) {
+  e.preventDefault();
+
+  const name = el.nicknameInput.value.trim();
+  if (!name) return;
+
+  el.nicknameBtn.disabled = true;
+  el.nicknameBtn.textContent = "Saving…";
+
+  try {
+    const res = await fetch(API.nickname, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nickname: name }),
+    });
+
+    if (res.status === 401) {
+      showSignIn();
+
+      return;
+    }
+
+    // 400 is a name that breaks the rules, 409 one that someone else already
+    // has. Both are the learner's to fix and both carry a message written to be
+    // read, so neither is worth paraphrasing here.
+    if (res.status === 400 || res.status === 409) {
+      const body = await res.json().catch(() => ({}));
+      el.nicknameBody.textContent = body.error || "That name can’t be used — try another.";
+      resetNicknameButton();
+      el.nicknameInput.focus();
+      el.nicknameInput.select();
+
+      return;
+    }
+
+    if (!res.ok) throw new Error(`nickname failed: ${res.status}`);
+
+    finishNickname(await res.json());
+  } catch (err) {
+    console.error(err);
+    el.nicknameBody.textContent = "Couldn’t reach the server. Check your connection and try again.";
+    resetNicknameButton();
+  }
+}
+
+async function skipNickname() {
+  el.nicknameSkipBtn.disabled = true;
+
+  try {
+    const res = await fetch(API.skipNickname, { method: "POST" });
+
+    if (res.status === 401) {
+      showSignIn();
+
+      return;
+    }
+    if (!res.ok) throw new Error(`skip failed: ${res.status}`);
+
+    // Read the name back rather than trusting the one on the button: the server
+    // assigns a different one if the suggestion was taken in the meantime.
+    finishNickname(await res.json());
+  } catch (err) {
+    console.error(err);
+    el.nicknameBody.textContent = "Couldn’t reach the server. Check your connection and try again.";
+    el.nicknameSkipBtn.disabled = false;
+  }
+}
+
+// finishNickname closes the panel and carries on into the deck.
+function finishNickname(me) {
+  showAccount(me);
+  show(el.account);
+
+  hide(el.nicknamePanel);
+  resetNicknameButton();
+  el.nicknameSkipBtn.disabled = false;
+
+  loadSummary();
+  loadBatch();
+}
+
+function resetNicknameButton() {
+  el.nicknameBtn.disabled = false;
+  el.nicknameBtn.textContent = "Save";
+}
+
 // --- data ------------------------------------------------------------------
 
 async function loadBatch() {
   showStatus("Loading your cards…");
   hide(el.panel);
   hide(el.signinPanel);
+  hide(el.nicknamePanel);
   // Drop any reveal still in flight, so a timer from the last batch cannot
   // advance an index that now points into a fresh set of cards.
   clearTimers();
@@ -624,6 +819,17 @@ el.controls.addEventListener("click", (e) => {
 el.againBtn.addEventListener("click", loadBatch);
 
 el.signinForm.addEventListener("submit", requestLink);
+
+el.nicknameForm.addEventListener("submit", submitNickname);
+el.nicknameSkipBtn.addEventListener("click", skipNickname);
+el.renameBtn.addEventListener("click", openRename);
+// Cancelling starts a fresh batch rather than restoring the old one: the stack
+// was cleared to show the panel, and the answers it held were already sent.
+el.nicknameCancelBtn.addEventListener("click", () => {
+  hide(el.nicknamePanel);
+  loadSummary();
+  loadBatch();
+});
 
 el.signoutBtn.addEventListener("click", async () => {
   try {
