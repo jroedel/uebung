@@ -31,11 +31,19 @@ Progress is saved to `uebung-data.json` in the working directory. Flags:
 
 1. The browser asks `GET /api/batch?lang=de` once and receives an ordered set of
    cards — due reviews first, then a capped number of new nouns — each carrying
-   its correct article and gloss.
+   its correct article, gloss, and example sentence.
 2. You answer every card locally. A miss is graded *again*; a hit is graded by
    how fast it came (*easy* / *good* / *hard*). Nothing hits the network.
 3. When the batch is done the client flushes every grade in one
    `POST /api/grade`. The server runs each through FSRS and persists the result.
+4. The round ends on the nouns you got wrong, each shown in a sentence with its
+   translation, so a miss is corrected in context rather than just counted.
+
+The example sentences use their noun in a natural case, which means the article
+*in the sentence* may be declined — "Ich kenne den Mann nicht." The nominative
+is appended for reference, "(der Mann)", and is composed at display time from
+the card's own article and lemma, so it can never disagree with the gender the
+deck teaches.
 
 `GET /api/summary?lang=de` reports deck size, nouns seen, and reviews due now.
 
@@ -99,6 +107,9 @@ make lint     # vet + gofmt check
 make build    # ./uebung
 ```
 
-The deck genders are hand-verified; corrections to
-`business/domain/vocab/stores/seeddb/nouns_de.json` are welcome, and the seed
-test guards against a malformed edit shipping.
+The deck genders and example sentences are hand-written; corrections to
+`business/domain/vocab/stores/seeddb/nouns_de.json` are welcome, and a native
+review of the German is genuinely wanted. The seed test guards against a
+malformed edit shipping: every noun must carry a gender, a gloss, a sentence and
+a translation, and the sentence must actually contain its own noun — which is
+the way a hand-edit most easily goes wrong.

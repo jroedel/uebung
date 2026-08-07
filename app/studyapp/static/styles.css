@@ -206,6 +206,40 @@ body {
 }
 .panel h2 { margin: 0 0 8px; }
 .panel p { color: var(--muted); margin: 0 0 18px; }
+
+/* Missed-noun review. The list can run to a whole batch, so it scrolls inside
+   the panel rather than pushing the "Next batch" button off-screen. */
+.misses {
+  text-align: left;
+  margin: 0 0 18px;
+  max-height: min(42vh, 300px);
+  overflow-y: auto;
+  border-top: 1px solid rgba(154, 163, 199, 0.22);
+  padding-top: 14px;
+}
+.misses-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.miss-list { list-style: none; margin: 0; padding: 0; }
+.miss-list li { margin: 0 0 14px; }
+.miss-list li:last-child { margin-bottom: 0; }
+
+/* The headword carries its correct article in the gender's own colour, so the
+   answer the learner missed is the most legible thing in the row. */
+.miss-word { font-weight: 800; font-size: 15px; }
+.miss-word.der { color: var(--der); }
+.miss-word.die { color: var(--die); }
+.miss-word.das { color: var(--das); }
+.miss-gloss { color: var(--muted); font-size: 13px; }
+.miss-example { margin: 4px 0 0; font-size: 14px; line-height: 1.45; }
+/* The nominative reference after a declined sentence, e.g. "(der Mann)". */
+.miss-nominative { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.miss-translation { margin: 2px 0 0; color: var(--muted); font-size: 13px; font-style: italic; }
 .primary {
   border: none;
   border-radius: 14px;

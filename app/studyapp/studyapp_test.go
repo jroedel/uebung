@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,9 +48,11 @@ func TestBatchReturnsPreloadedCardsWithAnswers(t *testing.T) {
 	var body struct {
 		Lang  string `json:"lang"`
 		Cards []struct {
-			Lemma   string `json:"lemma"`
-			Article string `json:"article"`
-			Gloss   string `json:"gloss"`
+			Lemma     string `json:"lemma"`
+			Article   string `json:"article"`
+			Gloss     string `json:"gloss"`
+			Example   string `json:"example"`
+			ExampleEn string `json:"example_en"`
 		} `json:"cards"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -65,6 +68,15 @@ func TestBatchReturnsPreloadedCardsWithAnswers(t *testing.T) {
 	for _, c := range body.Cards {
 		if c.Lemma == "" || c.Gloss == "" {
 			t.Fatalf("card missing lemma/gloss: %+v", c)
+		}
+		// The example ships with the batch rather than being fetched when the
+		// round ends, so that the end-of-round review costs no round-trip. If it
+		// stops arriving here, that review silently goes blank.
+		if c.Example == "" || c.ExampleEn == "" {
+			t.Fatalf("card %q missing example/translation: %+v", c.Lemma, c)
+		}
+		if !strings.Contains(c.Example, c.Lemma) {
+			t.Fatalf("card %q example %q does not contain the noun", c.Lemma, c.Example)
 		}
 		switch c.Article {
 		case "der", "die", "das":

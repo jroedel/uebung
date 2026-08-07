@@ -39,6 +39,8 @@ const el = {
   panel: document.getElementById("panel"),
   panelTitle: document.getElementById("panel-title"),
   panelBody: document.getElementById("panel-body"),
+  misses: document.getElementById("misses"),
+  missList: document.getElementById("miss-list"),
   againBtn: document.getElementById("again-btn"),
   statusPanel: document.getElementById("status-panel"),
   statusText: document.getElementById("status-text"),
@@ -293,7 +295,69 @@ async function finishBatch() {
   el.panelTitle.textContent = "Batch complete";
   el.panelBody.textContent = `${correct}/${state.results.length} correct. ` +
     (sum ? `${sum.due_now} due now · ${sum.learned}/${sum.deck_size} nouns seen.` : "");
+  renderMisses();
   show(el.panel);
+}
+
+// Every noun answered wrong this round, in the order it came up. A miss is
+// exactly a result rated "again" — the rating answer() assigns when the swipe
+// did not match the card's article — so this needs no separate bookkeeping.
+function missedCards() {
+  const byLemma = new Map(state.cards.map((c) => [c.lemma, c]));
+  return state.results
+    .filter((r) => r.rating === "again")
+    .map((r) => byLemma.get(r.lemma))
+    .filter(Boolean);
+}
+
+// Show each missed noun in a sentence, so the round ends on the words that need
+// the work rather than on a score alone.
+//
+// The sentence uses the noun in a natural case, so its article may be declined
+// ("Ich kenne den Mann nicht.") and is not necessarily the one being drilled.
+// The nominative is therefore composed here from the card's own article and
+// lemma and appended for reference — built at render time rather than stored, so
+// it always matches the gender this deck teaches.
+function renderMisses() {
+  const missed = missedCards();
+  el.missList.replaceChildren();
+
+  if (missed.length === 0) {
+    hide(el.misses);
+    return;
+  }
+
+  for (const card of missed) {
+    const item = document.createElement("li");
+
+    const head = document.createElement("div");
+    const word = document.createElement("span");
+    word.className = `miss-word ${card.article}`;
+    word.textContent = `${card.article} ${card.lemma}`;
+    const gloss = document.createElement("span");
+    gloss.className = "miss-gloss";
+    gloss.textContent = ` — ${card.gloss}`;
+    head.append(word, gloss);
+
+    const example = document.createElement("p");
+    example.className = "miss-example";
+    example.lang = "de";
+    example.textContent = `${card.example} `;
+    const nominative = document.createElement("span");
+    nominative.className = "miss-nominative";
+    nominative.textContent = `(${card.article} ${card.lemma})`;
+    example.appendChild(nominative);
+
+    const translation = document.createElement("p");
+    translation.className = "miss-translation";
+    translation.lang = "en";
+    translation.textContent = card.example_en;
+
+    item.append(head, example, translation);
+    el.missList.appendChild(item);
+  }
+
+  show(el.misses);
 }
 
 function finishEmpty() {
@@ -302,6 +366,7 @@ function finishEmpty() {
   hide(el.statusPanel);
   el.panelTitle.textContent = "All caught up";
   el.panelBody.textContent = "Nothing is due right now. Come back later, or start another batch.";
+  hide(el.misses); // nothing was answered, so any list from a previous round is stale.
   show(el.panel);
 }
 
