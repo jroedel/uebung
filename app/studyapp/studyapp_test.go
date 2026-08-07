@@ -31,6 +31,7 @@ func newServer(t *testing.T) http.Handler {
 		Study:      study,
 		BatchLimit: 5,
 		Now:        fixedNow,
+		Auth:       studyapp.SingleUser{},
 	})
 	return app.Handler()
 }
@@ -44,6 +45,7 @@ func newServerWithStatic(t *testing.T) http.Handler {
 		Vocab:  vocabbus.NewBusiness(seeddb.New()),
 		Study:  studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
 		Now:    fixedNow,
+		Auth:   studyapp.SingleUser{},
 		Static: studyapp.Assets(),
 	})
 
@@ -59,6 +61,7 @@ func healthServer(t *testing.T, err error) http.Handler {
 		Vocab:  vocabbus.NewBusiness(seeddb.New()),
 		Study:  studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
 		Now:    fixedNow,
+		Auth:   studyapp.SingleUser{},
 		Health: func(context.Context) error { return err },
 	})
 
@@ -304,6 +307,7 @@ func TestServesEmbeddedClientWhenConfigured(t *testing.T) {
 		Vocab:  vocab,
 		Study:  study,
 		Now:    fixedNow,
+		Auth:   studyapp.SingleUser{},
 		Static: studyapp.Assets(),
 	})
 	h := app.Handler()
@@ -317,5 +321,47 @@ func TestServesEmbeddedClientWhenConfigured(t *testing.T) {
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("Übung")) {
 		t.Fatal("index.html did not render the app title")
+	}
+}
+
+// Every study route must refuse an unauthenticated request. This is the whole
+// point of the accounts work: before it, any caller wrote to one shared deck.
+//
+// A nil Auth stands in for "authentication was not wired". It must close the app
+// rather than open it — forgetting to pass an Authenticator is exactly the
+// mistake that would otherwise ship a public, world-writable deck.
+func TestStudyRoutesRequireASignedInLearner(t *testing.T) {
+	app := studyapp.New(studyapp.Config{
+		Vocab: vocabbus.NewBusiness(seeddb.New()),
+		Study: studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
+		Now:   fixedNow,
+		// Auth deliberately omitted.
+	})
+	h := app.Handler()
+
+	tests := []struct {
+		method, path, body string
+	}{
+		{http.MethodGet, "/api/batch?lang=de", ""},
+		{http.MethodGet, "/api/summary?lang=de", ""},
+		{http.MethodPost, "/api/grade", `{"lang":"de","results":[{"lemma":"Mann","rating":"good"}]}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			var body *bytes.Reader
+			if tc.body != "" {
+				body = bytes.NewReader([]byte(tc.body))
+			} else {
+				body = bytes.NewReader(nil)
+			}
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, body))
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body)
+			}
+		})
 	}
 }

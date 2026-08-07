@@ -23,11 +23,67 @@ Progress is saved to a SQLite database, `uebung.db`, in the working directory.
 Flags:
 
 ```
--addr       address to listen on (default ":8080")
+-addr        address to listen on (default "127.0.0.1:8080"; keep it on loopback
+             behind a TLS proxy, since the session cookie and the one-time token
+             must never cross a plain-HTTP hop)
+-link-base   absolute URL of the sign-in callback, e.g.
+             https://uebung.club/auth/callback
+-trust-proxy believe X-Forwarded-For/-Proto. Only with a trusted TLS proxy in
+             front: unconditionally trusting them lets anyone forge a fresh
+             client address per request and walk past the rate limiter
+-smtp-host   SMTP host; empty logs the link instead of sending it
+-single-user DEVELOPMENT ONLY: skip sign-in, everyone is the same learner
 -data       progress database (default "uebung.db")
 -batch      cards per preloaded batch (default 20)
 -retention  FSRS desired retention, 0<r<1 (default 0.9)
 ```
+
+## Accounts
+
+There are no passwords. You give an address, we email a link, following it signs
+you in. That makes the address the account, so it is normalised on the way in —
+otherwise `John@x.com` and `john@x.com` are two decks.
+
+```
+POST /auth/request   {"email": "..."}   always 202, whatever the address
+GET  /auth/callback?token=...           303 to / with a session cookie
+POST /auth/logout                       destroys the session server-side
+GET  /auth/me                           who is signed in, or 401
+```
+
+Some deliberate choices worth knowing before changing any of it:
+
+- **`/auth/request` answers the same way for every well-formed address** — known,
+  unknown, or rate-limited. Anything else turns it into a "does this person have
+  an account here" oracle.
+- **Tokens and session ids are stored only as SHA-256 hashes.** A database dump
+  yields nothing replayable. Plain SHA-256 rather than argon2 is right *because*
+  these are 256-bit random values: there is no dictionary to attack.
+- **A link works once**, enforced by a conditional `UPDATE` in the store rather
+  than a read-then-write, so a double-clicked link cannot mint two sessions.
+- **Every failure in the callback looks identical** — expired, spent and forged
+  all redirect to `/?signin=expired`.
+- **Rate limits are per client address and per target address**, both charged.
+  Signup is open, so this endpoint makes our mail server send mail on a
+  stranger's say-so; the limits protect the domain's sending reputation.
+
+Run it without a mail server: with no `-smtp-host`, the link is written to the
+log. `-single-user` skips sign-in entirely and makes every visitor the built-in
+local learner — **development only**, it makes every visitor the same person.
+
+### Bringing a pre-accounts deck across
+
+Progress recorded before accounts existed is keyed to the `local` learner and
+would otherwise be stranded. Sign in once, stop the server, then:
+
+```bash
+uebung-claim -data uebung.db -email you@example.com -dry-run   # look first
+uebung-claim -data uebung.db -email you@example.com
+```
+
+It refuses unless the account exists and has followed a link, which is what
+proves the address is yours. A card the account has already studied keeps its own
+newer scheduling rather than being overwritten.
 
 ## How a session works
 

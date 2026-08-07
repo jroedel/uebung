@@ -53,6 +53,18 @@
       <button class="primary" id="again-btn">Next batch</button>
     </section>
 
+    <!-- Sign-in. Shown when /auth/me says nobody is signed in. -->
+    <section class="panel" id="signin-panel" hidden>
+      <h2>Sign in</h2>
+      <p id="signin-body">No password. We email you a link that signs you in.</p>
+      <form id="signin-form" autocomplete="on">
+        <input class="field" id="signin-email" type="email" name="email"
+               inputmode="email" autocomplete="email" required
+               placeholder="you@example.com" aria-label="Email address" />
+        <button class="primary" id="signin-btn" type="submit">Email me a link</button>
+      </form>
+    </section>
+
     <!-- Loading / error states. -->
     <section class="panel" id="status-panel">
       <p id="status-text">Loading your cards…</p>

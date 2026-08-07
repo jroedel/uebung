@@ -276,6 +276,20 @@ body {
 /* The nominative reference after a declined sentence, e.g. "(der Mann)". */
 .miss-nominative { color: var(--muted); font-weight: 600; white-space: nowrap; }
 .miss-translation { margin: 2px 0 0; color: var(--muted); font-size: 13px; font-style: italic; }
+/* Sign-in */
+#signin-form { display: flex; flex-direction: column; gap: 10px; }
+.field {
+  border: 1px solid rgba(154, 163, 199, 0.35);
+  border-radius: 14px;
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 16px; /* 16px stops iOS zooming the page when the field is focused */
+  padding: 12px 14px;
+  width: 100%;
+}
+.field:focus { outline: 2px solid var(--der); outline-offset: 1px; }
+.panel .muted { color: var(--muted); font-size: 13px; margin: 12px 0 0; }
+
 .primary {
   border: none;
   border-radius: 14px;

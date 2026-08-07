@@ -10,6 +10,7 @@ import (
 	"github.com/jroedel/uebung/business/types/cardstate"
 	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/userid"
+	"github.com/jroedel/uebung/foundation/sqldb"
 )
 
 func sampleCard() studybus.Progress {
@@ -37,15 +38,22 @@ func open(t *testing.T) *sqlitedb.Store {
 func openAt(t *testing.T, path string) *sqlitedb.Store {
 	t.Helper()
 
-	s, err := sqlitedb.Open(t.Context(), path)
+	// The store no longer owns the handle: identity and study share one database,
+	// so foundation/sqldb opens it and each store applies its own schema.
+	db, err := sqldb.Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("closing database: %v", err)
+		}
+	})
+
+	s, err := sqlitedb.Open(t.Context(), db)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := s.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	})
 
 	return s
 }

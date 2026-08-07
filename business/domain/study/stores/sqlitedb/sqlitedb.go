@@ -32,8 +32,6 @@ import (
 	"github.com/jroedel/uebung/business/types/cardstate"
 	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/userid"
-
-	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
 
 // timeLayout is how the two timestamp columns are encoded. RFC3339Nano drops
@@ -93,56 +91,21 @@ type Store struct {
 	db *sql.DB
 }
 
-// Open opens (creating if needed) the database at path and applies the schema.
-//
-// WAL keeps a reader from blocking on the writer, and busy_timeout means a
-// contended write waits rather than failing immediately with SQLITE_BUSY. The
-// pool is capped at one connection: SQLite serialises writes anyway, and for a
-// single learner's few hundred cards a serial pool removes lock contention as a
-// class of bug at no cost worth measuring.
-func Open(ctx context.Context, path string) (*Store, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", path)
-
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("sqlitedb: opening %s: %w", path, err)
-	}
-
-	db.SetMaxOpenConns(1)
-
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("sqlitedb: connecting to %s: %w", path, err)
+// Open applies the study schema to an already-open database and returns the
+// store. It takes a *sql.DB rather than a path because identity and progress live
+// in the same file: opening a second handle to one SQLite database would put two
+// pools behind the single-writer assumption this store relies on. foundation/sqldb
+// owns the pragmas and the connection cap.
+func Open(ctx context.Context, db *sql.DB) (*Store, error) {
+	if db == nil {
+		return nil, errors.New("sqlitedb: a database handle is required")
 	}
 
 	if _, err := db.ExecContext(ctx, schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("sqlitedb: applying schema to %s: %w", path, err)
+		return nil, fmt.Errorf("sqlitedb: applying study schema: %w", err)
 	}
 
 	return &Store{db: db}, nil
-}
-
-// Ping reports whether the database is still reachable. It is not part of
-// studybus.Storer: liveness is an operational concern, not a scheduling one, and
-// putting it on the Business port would oblige every future store to answer a
-// question only a networked one can meaningfully be asked. main wires this into
-// the app's health check.
-func (s *Store) Ping(ctx context.Context) error {
-	if err := s.db.PingContext(ctx); err != nil {
-		return fmt.Errorf("sqlitedb: ping: %w", err)
-	}
-
-	return nil
-}
-
-// Close releases the underlying database handle.
-func (s *Store) Close() error {
-	if err := s.db.Close(); err != nil {
-		return fmt.Errorf("sqlitedb: closing: %w", err)
-	}
-
-	return nil
 }
 
 // List returns every card for a user and language, converted to Business models.
@@ -330,4 +293,51 @@ func parseTime(column, s string) (time.Time, error) {
 	}
 
 	return t.UTC(), nil
+}
+
+// Reassign moves every progress row from one learner to another, returning how
+// many moved.
+//
+// It exists for exactly one migration: the deck built up before accounts existed
+// is keyed to the built-in "local" learner, and without this it would be
+// orphaned the moment sign-in became mandatory — you would log in and find a
+// fresh deck, with months of scheduling still in the database but unreachable.
+//
+// Deliberately not part of studybus.Storer. Bulk re-keying is an operational
+// act, not part of scheduling, and a business port that offers "change who owns
+// these rows" invites it being called from a request handler.
+func (s *Store) Reassign(ctx context.Context, from, to userid.UserID) (int64, error) {
+	if from.IsZero() || to.IsZero() {
+		return 0, errors.New("sqlitedb: reassign needs both a source and a target learner")
+	}
+
+	// A row for (to, lang, lemma) may already exist, and the primary key would
+	// reject the update. OR IGNORE skips those, leaving the target's own progress
+	// as the winner: the account someone is actually using should not be
+	// overwritten by an older anonymous deck.
+	const q = `UPDATE OR IGNORE study_progress SET user_id = ? WHERE user_id = ?`
+
+	res, err := s.db.ExecContext(ctx, q, to.String(), from.String())
+	if err != nil {
+		return 0, fmt.Errorf("sqlitedb: reassigning progress: %w", err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlitedb: reassigning progress: %w", err)
+	}
+
+	return n, nil
+}
+
+// CountFor reports how many progress rows a learner owns, so a migration can say
+// what it is about to move and what it moved.
+func (s *Store) CountFor(ctx context.Context, user userid.UserID) (int64, error) {
+	var n int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM study_progress WHERE user_id = ?`, user.String()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("sqlitedb: counting progress: %w", err)
+	}
+
+	return n, nil
 }
