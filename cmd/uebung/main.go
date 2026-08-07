@@ -74,12 +74,20 @@ func run() error {
 		BatchLimit: *batchLimit,
 		Now:        time.Now,
 		Static:     studyapp.Assets(),
+		Log:        log,
+		Health:     store.Ping,
 	})
 
+	// Timeouts are set for an internet-facing deployment behind a reverse proxy.
+	// ReadHeaderTimeout alone left a connection able to dawdle indefinitely once
+	// the headers were in.
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           app.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// Serve until the interrupt context is cancelled, then shut down gracefully.

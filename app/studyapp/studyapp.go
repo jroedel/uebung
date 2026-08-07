@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -30,6 +31,18 @@ type Config struct {
 	BatchLimit int              // cards per preloaded batch; defaults to 20.
 	Now        func() time.Time // clock seam; defaults to time.Now.
 	Static     fs.FS            // embedded browser client; nil serves API only.
+
+	// Log receives one line per request. Nil disables request logging, which is
+	// what the tests want.
+	Log *slog.Logger
+
+	// Health is polled by GET /healthz to decide whether the app can actually do
+	// its job, rather than merely being listened on. It is a func rather than a
+	// method on a store because the store is reached only through a Business port
+	// here, and liveness is not a Business concern; main owns the concrete store
+	// and passes its check in. Nil means /healthz reports on process liveness
+	// alone.
+	Health func(context.Context) error
 }
 
 // App holds the wired dependencies and serves HTTP.
@@ -39,6 +52,8 @@ type App struct {
 	batchLimit int
 	now        func() time.Time
 	static     fs.FS
+	log        *slog.Logger
+	health     func(context.Context) error
 }
 
 // New constructs an App, filling in defaults for the optional policy knobs.
@@ -59,6 +74,8 @@ func New(cfg Config) *App {
 		batchLimit: limit,
 		now:        now,
 		static:     cfg.Static,
+		log:        cfg.Log,
+		health:     cfg.Health,
 	}
 }
 
@@ -69,12 +86,81 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/batch", a.handleBatch)
 	mux.HandleFunc("POST /api/grade", a.handleGrade)
 	mux.HandleFunc("GET /api/summary", a.handleSummary)
+	mux.HandleFunc("GET /healthz", a.handleHealthz)
 
 	if a.static != nil {
+		// "GET /" is the least specific pattern, so the routes above still win.
 		mux.Handle("GET /", http.FileServer(http.FS(a.static)))
 	}
 
-	return mux
+	return a.withLogging(mux)
+}
+
+// withLogging wraps h to emit one line per request. It is the outermost layer so
+// a request is logged whatever handles it, including 404s from the file server.
+func (a *App) withLogging(h http.Handler) http.Handler {
+	if a.log == nil {
+		return h
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := a.now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(rec, r)
+
+		// The query string is deliberately excluded: once accounts arrive it is a
+		// place login tokens can appear, and logs outlive the tokens in them.
+		a.log.Info("request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"bytes", rec.written,
+			"duration", a.now().Sub(started),
+		)
+	})
+}
+
+// statusRecorder remembers what a handler wrote so it can be logged. WriteHeader
+// may never be called, which is why status starts at 200.
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	n, err := s.ResponseWriter.Write(b)
+	s.written += n
+
+	return n, err
+}
+
+// handleHealthz reports whether the app can serve, not merely whether it is
+// listening: with a Health check wired it touches the store, so a database that
+// has gone away fails the probe instead of returning 200 while every study
+// request errors.
+func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if a.health != nil {
+		if err := a.health(r.Context()); err != nil {
+			// The body is deliberately vague; the detail goes to the log, not to
+			// whoever is polling the endpoint.
+			if a.log != nil {
+				a.log.Error("health check failed", "err", err)
+			}
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
 }
 
 // currentUser resolves the learner for a request. Today it is always the built-in

@@ -1,4 +1,4 @@
-# Übung — der/die/das trainer.
+# Übung Club — der/die/das trainer.
 #
 # Targets mirror the sibling project's workflow (build / vet / fmt / lint /
 # test) so the same habits apply here. The one runtime dependency is the pure-Go

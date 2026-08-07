@@ -123,6 +123,19 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// Ping reports whether the database is still reachable. It is not part of
+// studybus.Storer: liveness is an operational concern, not a scheduling one, and
+// putting it on the Business port would oblige every future store to answer a
+// question only a networked one can meaningfully be asked. main wires this into
+// the app's health check.
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("sqlitedb: ping: %w", err)
+	}
+
+	return nil
+}
+
 // Close releases the underlying database handle.
 func (s *Store) Close() error {
 	if err := s.db.Close(); err != nil {

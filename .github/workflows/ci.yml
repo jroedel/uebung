@@ -1,0 +1,47 @@
+# Runs the same checks a developer runs locally: `make test` is unit tests, vet,
+# gofmt and govulncheck. Keeping CI to that one target means the two cannot drift
+# apart -- if it passes here it passed the same way on a laptop.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A force-push or a quick follow-up commit makes the in-flight run pointless, so
+# cancel it rather than paying for both.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Read the version from go.mod so there is one place to bump it.
+          go-version-file: go.mod
+          cache: true
+
+      # govulncheck queries the vulnerability database over the network, so this
+      # step needs egress. It is the reason `make test` is not fully offline.
+      - name: make test
+        run: make test
+
+      - name: Build
+        run: make build
+
+      # The deploy target is a static Linux binary; prove it still links without
+      # a C toolchain, since the pure-Go SQLite driver is what makes that true.
+      - name: Static build (CGO disabled)
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: go build -o /tmp/uebung-static ./cmd/uebung
