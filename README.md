@@ -164,6 +164,11 @@ It refuses unless the account exists and has followed a link, which is what
 proves the address is yours. A card the account has already studied keeps its own
 newer scheduling rather than being overwritten.
 
+The review log moves in full, including the reviews of any card left behind by
+that rule. Those are still things the same person did — the claim is a statement
+that the anonymous deck was always theirs — and the log is a history rather than a
+key, so nothing collides.
+
 ## How a session works
 
 1. The browser asks `GET /api/batch?lang=de` once and receives an ordered set of
@@ -214,18 +219,21 @@ app/studyapp                   HTTP handlers; the only layer that knows both dom
 business/domain/vocab          the noun deck (what the genders are)
   vocabbus, stores/seeddb      embedded curated JSON deck
 business/domain/study          scheduling (when to show each card)
-  studybus                     FSRS-driven selection + grading, over opaque lemmas
+  studybus                     FSRS-driven selection + grading, over opaque deck items
   stores/sqlitedb, memdb       SQLite persistence; in-memory for tests
-business/types                 strong types: article, rating, cardstate, userid, langcode
+business/types                 strong types: article, rating, cardstate, userid,
+                               langcode, deckid, roleanswer
 foundation/fsrs                self-contained FSRS-5 scheduler
 foundation/errs                field-error accumulation for converters
 ```
 
 Two deliberate boundaries make future modules cheap:
 
-- **study never imports vocab.** The scheduler works on opaque lemma strings; the
-  App layer pairs a scheduled lemma back with its noun. A new deck (plurals, a
-  second language) is new data behind the same scheduler.
+- **study never imports vocab.** The scheduler works on opaque item strings scoped
+  by a `deckid.DeckID`; the App layer pairs a scheduled item back with its noun. A
+  new deck (prepositions, a second language) is new data behind the same
+  scheduler, and the deck in the key is what stops two decks that happen to share
+  an item key — "mit" as a preposition, "mit" as anything else — from colliding.
 - **the scheduler is foundation.** `foundation/fsrs` is pure arithmetic and knows
   nothing about German; the study domain converts to and from it at one seam.
 
@@ -244,7 +252,28 @@ Persistence sits behind `studybus.Storer`, and the shipping implementation is
 `sqlitedb`. The driver is `modernc.org/sqlite` — pure Go, so there is no CGO and
 no C toolchain in the build and `CGO_ENABLED=0` cross-compiles still work. A
 review writes one row rather than rewriting a whole document, and the
-`(user, lang, lemma)` key is enforced by the database.
+`(user, lang, deck, item)` key is enforced by the database.
+
+There are two tables, and the difference between them is the point:
+
+- **`study_progress`** is where each card stands *now* — one row per card,
+  overwritten by every review.
+- **`study_review`** is what *happened* — one row per graded answer, appended and
+  never updated. Points, streaks, daily counts and a leaderboard are all questions
+  about *when* someone studied, and `study_progress` cannot answer any of them: it
+  holds one timestamp, the most recent. Keeping the events rather than a running
+  score also means the scoring formula can change later without orphaning the
+  history, which a counter column could never offer.
+
+A grade writes to both in one transaction, which is why `Storer.Save` takes the
+card and its review together: a crash must not be able to leave a card advanced
+with no record of the answer that advanced it.
+
+A database written before decks existed is migrated on `Open`. SQLite cannot add a
+column to a primary key in place, so this is the documented rebuild — create,
+copy, drop, rename — in a single transaction, and every existing row lands in
+`der-die-das`, the deck it was always implicitly in. The check is the absence of a
+`deck` column, so re-running it is a no-op and a fresh database never touches it.
 
 One schema note: the two timestamps are stored as `RFC3339Nano` **text** in UTC,
 not as integers, so a row is readable in a `sqlite3` shell and an unreviewed

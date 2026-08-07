@@ -19,10 +19,21 @@ import (
 
 	"github.com/jroedel/uebung/business/domain/study/studybus"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
+	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
+	"github.com/jroedel/uebung/business/types/roleanswer"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/errs"
 )
+
+// nounDeck is the deck every request handled here studies.
+//
+// The API does not name a deck yet: a client asks for a language and gets the
+// German gender deck, because it is the only one that exists. The scheduler
+// underneath is already deck-aware, so naming the deck here — once, in the layer
+// that composes domains — is what keeps that true while the wire format stays
+// exactly as it was. Adding a deck parameter later is a change to this file.
+var nounDeck = deckid.DerDieDas
 
 // Config wires an App together from its two Business domains and its policy.
 type Config struct {
@@ -230,7 +241,7 @@ func (a *App) handleBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chosen, err := a.study.Batch(ctx, user, lang, lemmas, a.now(), a.batchLimit)
+	chosen, err := a.study.Batch(ctx, user, lang, nounDeck, lemmas, a.now(), a.batchLimit)
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -272,7 +283,9 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 
 	applied := 0
 	for _, res := range results {
-		if _, err := a.study.Grade(ctx, user, lang, res.lemma, res.rating, now); err != nil {
+		// roleanswer.None: this deck asks for an article and nothing else. The
+		// two-part cards that have a role half live in a deck that does not exist yet.
+		if _, err := a.study.Grade(ctx, user, lang, nounDeck, res.lemma, res.rating, roleanswer.None, now); err != nil {
 			writeServerError(w, err)
 			return
 		}
@@ -324,7 +337,7 @@ func (a *App) computeSummary(ctx context.Context, user userid.UserID, lang langc
 		return summaryResponse{}, err
 	}
 
-	progress, err := a.study.Progress(ctx, user, lang)
+	progress, err := a.study.Progress(ctx, user, lang, nounDeck)
 	if err != nil {
 		return summaryResponse{}, err
 	}
