@@ -357,13 +357,24 @@ func (a *App) handleSetNickname(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, fromBusUserResponse(updated, nickname.Nickname{}))
 }
 
-// handleSkipNickname accepts a generated name on the learner's behalf.
+// handleSkipNickname accepts a suggested name on the learner's behalf.
 //
-// It generates afresh rather than taking a name from the request. The suggestion
-// the client is showing may have been taken since it was offered, and more to
-// the point, accepting a client-supplied name here would make this a second way
-// to set an arbitrary nickname — one that skipped every rule the other endpoint
-// applies.
+// The body carries the name the skip button was showing, and that is the name
+// claimed: someone who pressed "Be Blaue Eule" has agreed to a specific name,
+// and giving them a different one makes the button a lie. An earlier version
+// generated afresh here on the reasoning that the suggestion might have been
+// taken — which confused not trusting the name with ignoring it, and meant the
+// two sides essentially never agreed.
+//
+// Trusting the body is safe because it is parsed by the same toBusNickname as
+// the endpoint above: length, character set and screening all still apply, so
+// this is not a way to set a name the other path would refuse. The only
+// difference is what happens on a conflict — here the server quietly picks
+// another rather than reporting one, because the learner asked not to be
+// involved in this decision.
+//
+// A missing or unparseable body is not an error either, for the same reason: it
+// falls back to any free name.
 func (a *App) handleSkipNickname(w http.ResponseWriter, r *http.Request) {
 	user, err := a.identity.Authenticate(r.Context(), a.sessionSecret(r))
 	if err != nil {
@@ -380,7 +391,18 @@ func (a *App) handleSkipNickname(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := a.identity.AssignNickname(r.Context(), user.ID)
+	// Whatever the client was showing, if anything. A body that does not decode
+	// or does not parse leaves this as the zero value, which asks for any free
+	// name rather than failing the request.
+	var preferred nickname.Nickname
+	var req setNicknameRequest
+	if err := decodeJSON(r, &req); err == nil {
+		if name, err := toBusNickname(req); err == nil {
+			preferred = name
+		}
+	}
+
+	updated, err := a.identity.AssignNickname(r.Context(), user.ID, preferred)
 	if err != nil {
 		a.log.Error("assigning a nickname", "user", user.ID.String(), "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not pick a name just now; please try again"})

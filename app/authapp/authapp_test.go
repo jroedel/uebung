@@ -549,7 +549,35 @@ func TestSetNicknameConflictsAre409(t *testing.T) {
 	}
 }
 
-func TestSkipAssignsAName(t *testing.T) {
+// Skipping must hand over the exact name the button was showing. This runs
+// against the real generator on purpose: the bug it guards against was invisible
+// to a stub namer, whose fixed sequence made the offered and generated names
+// agree by construction. With ~112,000 pairs to draw from, a fresh draw matches
+// the suggestion about once in 112,000 runs, so this fails essentially always if
+// the preference is dropped.
+func TestSkipAssignsTheNameThatWasOffered(t *testing.T) {
+	f := newFixture(t, true)
+	session := f.signIn(t, "learner@example.com")
+
+	offered, _ := f.me(t, session)["suggestion"].(string)
+	if offered == "" {
+		t.Fatal("no suggestion offered, so there is nothing for skip to honour")
+	}
+
+	rec := f.as(t, session, http.MethodPost, "/auth/nickname/skip", `{"nickname":"`+offered+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/auth/nickname/skip status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	assigned, _ := f.me(t, session)["nickname"].(string)
+	if assigned != offered {
+		t.Errorf("the button offered %q but the account got %q", offered, assigned)
+	}
+}
+
+// A skip with no body still has to produce a name, since the client may have had
+// no suggestion to show.
+func TestSkipWithoutABodyStillAssigns(t *testing.T) {
 	f := newFixture(t, true)
 	session := f.signIn(t, "learner@example.com")
 
@@ -564,6 +592,64 @@ func TestSkipAssignsAName(t *testing.T) {
 	}
 	if _, err := nickname.Parse(assigned); err != nil {
 		t.Errorf("assigned name %q is not a valid nickname: %v", assigned, err)
+	}
+}
+
+// The body goes through the same validation as the other endpoint, so skip is
+// not a way round the rules. A name that would be refused there is ignored here
+// and a generated one used instead.
+func TestSkipIgnoresANameThatWouldBeRefused(t *testing.T) {
+	for _, body := range []string{
+		`{"nickname":"Admin"}`,
+		`{"nickname":"Scheisse"}`,
+		`{"nickname":"Blaue_Eule"}`,
+		`{"nickname":"Ei"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			f := newFixture(t, true)
+			session := f.signIn(t, "learner@example.com")
+
+			rec := f.as(t, session, http.MethodPost, "/auth/nickname/skip", body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+			}
+
+			assigned, _ := f.me(t, session)["nickname"].(string)
+			if _, err := nickname.Parse(assigned); err != nil {
+				t.Errorf("assigned name %q is not a valid nickname: %v", assigned, err)
+			}
+		})
+	}
+}
+
+// Two people offered the same name: the first gets it, the second gets something
+// else rather than an error.
+func TestSkipFallsBackWhenTheOfferedNameIsTaken(t *testing.T) {
+	f := newFixture(t, true)
+
+	first := f.signIn(t, "first@example.com")
+	second := f.signIn(t, "second@example.com")
+
+	contested, _ := f.me(t, first)["suggestion"].(string)
+	if contested == "" {
+		t.Fatal("no suggestion to contest")
+	}
+
+	if rec := f.as(t, first, http.MethodPost, "/auth/nickname/skip", `{"nickname":"`+contested+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("first skip: status = %d, body=%s", rec.Code, rec.Body)
+	}
+
+	rec := f.as(t, second, http.MethodPost, "/auth/nickname/skip", `{"nickname":"`+contested+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second skip: status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	got, _ := f.me(t, second)["nickname"].(string)
+	if got == contested {
+		t.Errorf("both accounts ended up with %q", contested)
+	}
+	if got == "" {
+		t.Error("the second account got no name at all")
 	}
 }
 
