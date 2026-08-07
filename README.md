@@ -28,9 +28,13 @@ Flags:
              must never cross a plain-HTTP hop)
 -link-base   absolute URL of the sign-in callback, e.g.
              https://uebung.club/auth/callback
--trust-proxy believe X-Forwarded-For/-Proto. Only with a trusted TLS proxy in
-             front: unconditionally trusting them lets anyone forge a fresh
-             client address per request and walk past the rate limiter
+-trust-proxy believe X-Forwarded-For for rate limiting. Only with a trusted proxy
+             in front: unconditionally trusting it lets anyone forge a fresh
+             client address per request and walk past the rate limiter. It has no
+             say over cookies -- see below
+-insecure-cookies
+             DEVELOPMENT ONLY: issue session cookies without Secure, for
+             plain-HTTP localhost
 -smtp-host   SMTP host; empty logs the link instead of sending it
 -single-user DEVELOPMENT ONLY: skip sign-in, everyone is the same learner
 -data       progress database (default "uebung.db")
@@ -53,6 +57,13 @@ GET  /auth/me                           who is signed in, or 401
 
 Some deliberate choices worth knowing before changing any of it:
 
+- **A link is confirmed, not auto-redeemed.** `GET /auth/callback` shows "continue
+  as `<address>`?"; only the `POST` signs you in. Following a link is something an
+  attacker can make your browser do, and signup is open — so redeeming on GET
+  would let someone steer you into *their* account and collect everything you
+  studied. The confirmation is protected by a `SameSite=Strict` nonce cookie, so a
+  cross-site auto-submitting form cannot stand in for you. Opening a link on a
+  different device from the one that requested it still works.
 - **`/auth/request` answers the same way for every well-formed address** — known,
   unknown, or rate-limited. Anything else turns it into a "does this person have
   an account here" oracle.
@@ -70,6 +81,29 @@ Some deliberate choices worth knowing before changing any of it:
 Run it without a mail server: with no `-smtp-host`, the link is written to the
 log. `-single-user` skips sign-in entirely and makes every visitor the built-in
 local learner — **development only**, it makes every visitor the same person.
+
+### Cookies and the reverse proxy
+
+Session cookies carry `Secure` and the `__Host-` prefix whenever `-link-base` is
+an `https://` URL. **This is decided once at startup, never per request.** It used
+to be inferred from `X-Forwarded-Proto`, which was a trap: behind Apache `r.TLS`
+is nil on every request and `mod_proxy_http` does not send that header, so the app
+silently issued 90-day session cookies with neither protection — and nothing
+looked broken, because the site still worked over HTTPS.
+
+Running on plain-HTTP localhost, pass an `http://` link base (or
+`-insecure-cookies`); the server warns on startup when cookies will lack `Secure`.
+
+Two things still belong on the proxy, because the app cannot set them for you:
+
+```apache
+# So the app sees the real client address for rate limiting (with -trust-proxy).
+RequestHeader set X-Forwarded-Proto "https"
+# So a browser never tries plain HTTP in the first place.
+Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+```
+
+Use `set`, not `setifempty`: with `setifempty` a client can supply its own value.
 
 ### Bringing a pre-accounts deck across
 

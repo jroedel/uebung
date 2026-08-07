@@ -223,6 +223,41 @@ func (b *Business) RequestLogin(ctx context.Context, addr email.Email) error {
 	return nil
 }
 
+// Peek reports which account a magic-link token belongs to WITHOUT consuming it.
+//
+// It exists so the App layer can show "sign in as this address?" before anything
+// is spent. That confirmation step is what stops a link being redeemed by a
+// cross-site navigation the person never chose to make: an attacker can send a
+// victim to the callback, but cannot make the victim submit the form.
+//
+// Peek deliberately does not mark the token used, so a person who closes the
+// confirmation page still has a working link. Every failure is the same
+// ErrInvalidCredential as Redeem, so this cannot be used to probe which tokens
+// exist.
+func (b *Business) Peek(ctx context.Context, rawToken string) (User, error) {
+	if rawToken == "" {
+		return User{}, ErrInvalidCredential
+	}
+
+	token, found, err := b.store.LoginTokenByHash(ctx, secret.Hash(rawToken))
+	if err != nil {
+		return User{}, fmt.Errorf("identitybus: loading token: %w", err)
+	}
+	if !found || !token.IsRedeemable(b.now()) {
+		return User{}, ErrInvalidCredential
+	}
+
+	user, found, err := b.store.UserByID(ctx, token.UserID)
+	if err != nil {
+		return User{}, fmt.Errorf("identitybus: loading account: %w", err)
+	}
+	if !found {
+		return User{}, ErrInvalidCredential
+	}
+
+	return user, nil
+}
+
 // Redeem exchanges a magic-link token for a new session, returning the raw
 // session secret for the caller to set as a cookie and the user it belongs to.
 //

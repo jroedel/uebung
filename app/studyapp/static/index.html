@@ -30,6 +30,12 @@
       <span id="stat-learned">–</span>/<span id="stat-deck">–</span> learned ·
       <span id="stat-due">–</span> due
     </div>
+    <!-- Who is signed in, and a way out. Not cosmetic: without it, a session
+         someone did not choose to start is invisible and unrecoverable. -->
+    <p class="account" id="account" hidden>
+      <span id="account-email"></span>
+      <button class="linkish" id="signout-btn" type="button">Sign out</button>
+    </p>
   </header>
 
   <main class="stage" id="stage">

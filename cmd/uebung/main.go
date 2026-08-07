@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -55,7 +56,8 @@ func run() error {
 	retention := flag.Float64("retention", 0.9, "FSRS desired retention, in (0,1)")
 
 	linkBase := flag.String("link-base", "", "absolute URL of the sign-in callback, e.g. https://uebung.club/auth/callback")
-	trustProxy := flag.Bool("trust-proxy", false, "believe X-Forwarded-For/-Proto; only with a trusted TLS proxy in front")
+	trustProxy := flag.Bool("trust-proxy", false, "believe X-Forwarded-For for rate limiting; only with a trusted proxy in front")
+	insecureCookies := flag.Bool("insecure-cookies", false, "DEVELOPMENT ONLY: issue session cookies without Secure, for plain-HTTP localhost")
 	singleUser := flag.Bool("single-user", false, "DEVELOPMENT ONLY: skip sign-in and make every visitor the same learner")
 
 	smtpHost := flag.String("smtp-host", "", "SMTP host; empty logs the sign-in link instead of sending it")
@@ -114,12 +116,24 @@ func run() error {
 		return fmt.Errorf("preparing identity: %w", err)
 	}
 
+	// Cookie security is decided once, here, from the scheme of the link we put in
+	// emails — not per request from X-Forwarded-Proto. Inferring it per request
+	// meant a deployment behind Apache (r.TLS nil, and mod_proxy_http does not
+	// send X-Forwarded-Proto) silently issued 90-day session cookies with neither
+	// Secure nor the __Host- prefix, with no visible symptom.
+	secureCookies := strings.HasPrefix(*linkBase, "https://") && !*insecureCookies
+	if !secureCookies {
+		log.Warn("session cookies will be issued WITHOUT Secure: only acceptable on plain-HTTP localhost",
+			"link_base", *linkBase, "insecure_cookies", *insecureCookies)
+	}
+
 	// App.
 	auth := authapp.New(authapp.Config{
-		Identity:   identity,
-		Log:        log,
-		Now:        time.Now,
-		TrustProxy: *trustProxy,
+		Identity:      identity,
+		Log:           log,
+		Now:           time.Now,
+		TrustProxy:    *trustProxy,
+		SecureCookies: secureCookies,
 	})
 
 	// The study app takes an Authenticator interface; the auth app satisfies it.

@@ -17,6 +17,7 @@ const API = {
   summary: (lang) => `/api/summary?lang=${encodeURIComponent(lang)}`,
   me: "/auth/me",
   requestLink: "/auth/request",
+  logout: "/auth/logout",
 };
 
 // Direction → article. Left = der, Up = das, Right = die. Chosen so the two
@@ -60,6 +61,9 @@ const el = {
   panel: document.getElementById("panel"),
   panelTitle: document.getElementById("panel-title"),
   panelBody: document.getElementById("panel-body"),
+  account: document.getElementById("account"),
+  accountEmail: document.getElementById("account-email"),
+  signoutBtn: document.getElementById("signout-btn"),
   signinPanel: document.getElementById("signin-panel"),
   signinForm: document.getElementById("signin-form"),
   signinEmail: document.getElementById("signin-email"),
@@ -95,10 +99,10 @@ const state = {
 async function start() {
   hide(el.panel);
 
-  let signedIn = false;
+  let me = null;
   try {
     const res = await fetch(API.me, { headers: { Accept: "application/json" } });
-    signedIn = res.ok;
+    if (res.ok) me = await res.json();
   } catch (err) {
     console.error(err);
     showStatus("Couldn't reach the server. Check your connection and try again.");
@@ -106,11 +110,16 @@ async function start() {
     return;
   }
 
-  if (!signedIn) {
+  if (!me) {
     showSignIn();
 
     return;
   }
+
+  // Show the address. A session can be started by following a link someone else
+  // sent, so "which account am I in" has to be answerable at a glance.
+  el.accountEmail.textContent = me.email;
+  show(el.account);
 
   loadSummary();
   loadBatch();
@@ -121,6 +130,7 @@ async function start() {
 // link failed -- expired, already used and forged all look the same on purpose.
 function showSignIn() {
   hide(el.statusPanel);
+  hide(el.account);
   hide(el.controls);
   hide(el.stats);
   clearStack();
@@ -614,5 +624,16 @@ el.controls.addEventListener("click", (e) => {
 el.againBtn.addEventListener("click", loadBatch);
 
 el.signinForm.addEventListener("submit", requestLink);
+
+el.signoutBtn.addEventListener("click", async () => {
+  try {
+    await fetch(API.logout, { method: "POST" });
+  } catch (err) {
+    console.error(err);
+  }
+  // Reload rather than patching state: the whole page is now signed out, and a
+  // fresh start() is the one path that decides what to show.
+  location.assign("/");
+});
 
 start();
