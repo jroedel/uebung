@@ -21,6 +21,7 @@ import (
 	"github.com/jroedel/uebung/business/domain/identity/identitybus"
 	"github.com/jroedel/uebung/business/types/email"
 	"github.com/jroedel/uebung/business/types/userid"
+	"github.com/jroedel/uebung/foundation/secret"
 )
 
 // SessionCookieName is the cookie holding the session secret. The __Host- prefix
@@ -41,10 +42,22 @@ type Config struct {
 	Log      *slog.Logger
 	Now      func() time.Time
 
-	// TrustProxy tells the handlers to believe X-Forwarded-For and
-	// X-Forwarded-Proto. True only when something we control terminates TLS in
-	// front; see clientip.go for why this is a flag and not a guess.
+	// TrustProxy tells the rate limiter to believe X-Forwarded-For. True only
+	// when something we control terminates TLS in front; see clientip.go for why
+	// this is a flag and not a guess. It deliberately has no say over cookies.
 	TrustProxy bool
+
+	// SecureCookies decides, once, whether session cookies carry Secure and the
+	// __Host- prefix.
+	//
+	// This is a constant for the process, not a per-request inference. Deriving it
+	// from X-Forwarded-Proto meant that a deployment behind Apache — where r.TLS
+	// is always nil and mod_proxy_http does not send X-Forwarded-Proto — issued
+	// 90-day session cookies with neither protection, silently, because the site
+	// still worked perfectly over HTTPS. main derives this from the -link-base
+	// scheme so the production path is secure by default and development has to
+	// opt out.
+	SecureCookies bool
 
 	// PerIPPerHour and PerEmailPerHour bound how many sign-in mails one client
 	// address, and one target address, can cause per hour.
@@ -58,6 +71,7 @@ type App struct {
 	log        *slog.Logger
 	now        func() time.Time
 	trustProxy bool
+	secure     bool
 	byIP       *limiter
 	byEmail    *limiter
 }
@@ -91,6 +105,7 @@ func New(cfg Config) *App {
 		log:        cfg.Log,
 		now:        now,
 		trustProxy: cfg.TrustProxy,
+		secure:     cfg.SecureCookies,
 		byIP:       newLimiter(perIP, time.Hour, now),
 		byEmail:    newLimiter(perEmail, time.Hour, now),
 	}
@@ -100,7 +115,8 @@ func New(cfg Config) *App {
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/request", a.handleRequest)
-	mux.HandleFunc("GET /auth/callback", a.handleCallback)
+	mux.HandleFunc("GET /auth/callback", a.handleConfirm)
+	mux.HandleFunc("POST /auth/callback", a.handleCallback)
 	mux.HandleFunc("POST /auth/logout", a.handleLogout)
 	mux.HandleFunc("GET /auth/me", a.handleMe)
 
@@ -162,16 +178,74 @@ func (a *App) handleRequest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleCallback exchanges a magic-link token for a session cookie.
+// handleConfirm shows "sign in as this address?" for a magic link, without
+// spending it.
 //
-// It responds with a redirect rather than JSON because the browser arrives here
-// by following a link from an email, and it redirects to "/" specifically so the
-// token stops being part of the visible URL: left in the address bar it would be
-// bookmarked, put in a Referer, and pasted into support threads.
-func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
+// The GET deliberately does not sign anyone in. Following a link is something an
+// attacker can make a browser do — a top-level cross-site navigation from a page
+// or a message — and signup here is open, so an attacker can hold a valid token
+// for an account they control and steer a victim's browser onto it. Redeeming on
+// GET would silently sign the victim in as the attacker, and every card they then
+// studied would be written to the attacker's deck. Requiring a form submission
+// closes that: the attacker can put the victim on this page but cannot submit it
+// for them.
+//
+// This does not break opening a link on a different device from the one that
+// asked for it — the confirmation happens in whichever browser opened the link.
+func (a *App) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 
-	raw, user, err := a.identity.Redeem(r.Context(), token)
+	user, err := a.identity.Peek(r.Context(), token)
+	if err != nil {
+		if !errors.Is(err, identitybus.ErrInvalidCredential) {
+			a.log.Error("checking sign-in link", "err", err)
+		}
+		http.Redirect(w, r, "/?signin=expired", http.StatusSeeOther)
+
+		return
+	}
+
+	// A nonce echoed by the form and held in a SameSite=Strict cookie. Strict is
+	// what does the work: a cross-site POST does not carry the cookie, so an
+	// auto-submitting form on an attacker's page cannot stand in for the person.
+	nonce, err := secret.New()
+	if err != nil {
+		a.log.Error("minting confirmation nonce", "err", err)
+		http.Error(w, "could not start sign-in", http.StatusInternalServerError)
+
+		return
+	}
+	a.setConfirmCookie(w, nonce)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	// The token is in the page, so keep it out of the Referer sent onward.
+	w.Header().Set("Referrer-Policy", "no-referrer")
+
+	if err := confirmPage.Execute(w, confirmData{Email: user.Email.String(), Token: token, Nonce: nonce}); err != nil {
+		a.log.Error("rendering confirmation", "err", err)
+	}
+}
+
+// handleCallback exchanges a magic-link token for a session cookie. It is the
+// POST half of the confirmation above, and the only place a session is issued.
+func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/?signin=expired", http.StatusSeeOther)
+
+		return
+	}
+
+	// Same-origin check first: without the Strict cookie this POST did not come
+	// from the page we rendered.
+	if !a.confirmNonceMatches(r) {
+		a.log.Warn("sign-in confirmation rejected: nonce missing or mismatched", "ip", clientIP(r, a.trustProxy))
+		http.Redirect(w, r, "/?signin=expired", http.StatusSeeOther)
+
+		return
+	}
+
+	raw, user, err := a.identity.Redeem(r.Context(), r.PostForm.Get("token"))
 	if err != nil {
 		if !errors.Is(err, identitybus.ErrInvalidCredential) {
 			a.log.Error("redeeming sign-in link", "err", err)
@@ -184,7 +258,8 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.setSessionCookie(w, r, raw)
+	a.clearConfirmCookie(w)
+	a.setSessionCookie(w, raw)
 	a.log.Info("signed in", "user", user.ID.String(), "email_domain", user.Email.Domain())
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -198,7 +273,7 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	a.clearSessionCookie(w, r)
+	a.clearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
 }
 
@@ -218,7 +293,7 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 // sessionSecret reads the session cookie under whichever name this deployment
 // uses.
 func (a *App) sessionSecret(r *http.Request) string {
-	name := a.cookieName(r)
+	name := a.cookieName()
 	if c, err := r.Cookie(name); err == nil {
 		return c.Value
 	}
@@ -226,25 +301,25 @@ func (a *App) sessionSecret(r *http.Request) string {
 	return ""
 }
 
-func (a *App) cookieName(r *http.Request) string {
-	if isSecureRequest(r, a.trustProxy) {
+// cookieName is fixed for the process. Both the write and the read path use it,
+// so a request cannot talk the server into looking for the unprotected name.
+func (a *App) cookieName() string {
+	if a.secure {
 		return SessionCookieName
 	}
 
 	return insecureSessionCookieName
 }
 
-func (a *App) setSessionCookie(w http.ResponseWriter, r *http.Request, raw string) {
-	secure := isSecureRequest(r, a.trustProxy)
-
+func (a *App) setSessionCookie(w http.ResponseWriter, raw string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:  a.cookieName(r),
+		Name:  a.cookieName(),
 		Value: raw,
 		Path:  "/",
 		// HttpOnly keeps the session out of reach of any script on the page, so a
 		// content injection cannot read it.
 		HttpOnly: true,
-		Secure:   secure,
+		Secure:   a.secure,
 		// Lax rather than Strict: the sign-in link arrives as a top-level
 		// navigation from an email client, and Strict would drop the cookie on
 		// exactly that first request.
@@ -254,13 +329,13 @@ func (a *App) setSessionCookie(w http.ResponseWriter, r *http.Request, raw strin
 	})
 }
 
-func (a *App) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+func (a *App) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     a.cookieName(r),
+		Name:     a.cookieName(),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   isSecureRequest(r, a.trustProxy),
+		Secure:   a.secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})

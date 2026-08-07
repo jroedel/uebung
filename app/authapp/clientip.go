@@ -20,7 +20,16 @@ import (
 //
 // The right-most entry is taken, not the left-most: the proxy appends the peer it
 // actually saw, so anything to the left was supplied by the client and is a
-// forgery in this deployment.
+// forgery in this deployment. That is correct for exactly one proxy hop, which is
+// the deployment this app documents; a second hop would need the count to be
+// configurable.
+//
+// Note what this is NOT used for. Cookie security is decided once at startup
+// (see Config.SecureCookies), never from a request header. It used to be
+// inferred here from X-Forwarded-Proto, which meant a deployment that forgot
+// -trust-proxy — or a proxy that does not send that header, as Apache's
+// mod_proxy_http does not — silently issued session cookies without Secure and
+// without the __Host- prefix, with no symptom because the site still worked.
 func clientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
@@ -40,24 +49,4 @@ func clientIP(r *http.Request, trustProxy bool) string {
 	}
 
 	return host
-}
-
-// isSecureRequest reports whether the browser's connection was HTTPS, which
-// decides whether the session cookie may carry the Secure attribute.
-//
-// Terminating TLS at Apache means r.TLS is nil here even on an https:// request,
-// so the proxy's X-Forwarded-Proto is the only evidence — and again only when the
-// proxy is trusted. Getting this wrong in the safe direction (omitting Secure)
-// would ship session cookies over plain HTTP, so main defaults trustProxy on for
-// the deployed configuration and local development opts out.
-func isSecureRequest(r *http.Request, trustProxy bool) bool {
-	if r.TLS != nil {
-		return true
-	}
-
-	if trustProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		return true
-	}
-
-	return false
 }
