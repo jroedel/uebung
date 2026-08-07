@@ -2,6 +2,7 @@ package seeddb
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/jroedel/uebung/business/types/article"
@@ -31,6 +32,18 @@ func TestGermanDeckLoadsAndIsWellFormed(t *testing.T) {
 		}
 		if n.Gloss == "" {
 			t.Fatalf("%q has no gloss", n.Lemma)
+		}
+		if n.Example == "" {
+			t.Fatalf("%q has no example sentence", n.Lemma)
+		}
+		if n.ExampleEn == "" {
+			t.Fatalf("%q has no example translation", n.Lemma)
+		}
+		// The example exists to show the learner this noun. A sentence that does
+		// not contain it is the likeliest hand-edit mistake, and the one a
+		// learner would notice immediately.
+		if !strings.Contains(n.Example, n.Lemma) {
+			t.Fatalf("%q example %q does not contain the noun", n.Lemma, n.Example)
 		}
 		if n.Lang != langcode.German {
 			t.Fatalf("%q tagged with wrong language %q", n.Lemma, n.Lang)
@@ -71,6 +84,32 @@ func TestKnownTrickyGenders(t *testing.T) {
 		if got != art {
 			t.Fatalf("%q gender = %q, want %q", lemma, got, art)
 		}
+	}
+}
+
+// toBusNoun is the guard that stops a bad hand-edit reaching a learner, so the
+// rejections themselves are worth pinning: a row that parses but is wrong is
+// exactly what the deck's "corrections welcome" invitation risks.
+func TestMalformedRowsAreRejected(t *testing.T) {
+	good := nounRow{Noun: "Haus", Article: "das", Gloss: "house",
+		Example: "Das Haus steht leer.", ExampleEn: "The house is empty."}
+
+	if _, err := toBusNoun(good, langcode.German); err != nil {
+		t.Fatalf("a well-formed row was rejected: %v", err)
+	}
+
+	tests := map[string]func(nounRow) nounRow{
+		"empty example":            func(r nounRow) nounRow { r.Example = ""; return r },
+		"empty translation":        func(r nounRow) nounRow { r.ExampleEn = ""; return r },
+		"example missing the noun": func(r nounRow) nounRow { r.Example = "Es steht leer."; return r },
+	}
+
+	for name, break_ := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := toBusNoun(break_(good), langcode.German); err == nil {
+				t.Fatal("expected the row to be rejected")
+			}
+		})
 	}
 }
 

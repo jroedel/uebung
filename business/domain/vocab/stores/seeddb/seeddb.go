@@ -14,6 +14,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
 	"github.com/jroedel/uebung/business/types/article"
@@ -26,9 +27,11 @@ var files embed.FS
 // nounRow is one raw deck entry as it appears in the embedded JSON: primitives
 // only, no strong types. It is the Storage-edge representation.
 type nounRow struct {
-	Noun    string `json:"noun"`
-	Article string `json:"article"`
-	Gloss   string `json:"gloss"`
+	Noun      string `json:"noun"`
+	Article   string `json:"article"`
+	Gloss     string `json:"gloss"`
+	Example   string `json:"example"`
+	ExampleEn string `json:"example_en"`
 }
 
 // deckFile is the on-disk shape of one language's embedded deck.
@@ -100,10 +103,28 @@ func toBusNoun(row nounRow, lang langcode.LangCode) (vocabbus.Noun, error) {
 		return vocabbus.Noun{}, fmt.Errorf("empty gloss")
 	}
 
+	if row.Example == "" {
+		return vocabbus.Noun{}, fmt.Errorf("empty example")
+	}
+
+	// An example that does not contain its own noun is useless for the review it
+	// exists to serve, and is the likeliest way a hand-edited deck goes wrong —
+	// a sentence pasted onto the wrong row. Catch it at load rather than showing
+	// a learner a sentence about something else.
+	if !strings.Contains(row.Example, row.Noun) {
+		return vocabbus.Noun{}, fmt.Errorf("example %q does not contain the noun", row.Example)
+	}
+
+	if row.ExampleEn == "" {
+		return vocabbus.Noun{}, fmt.Errorf("empty example translation")
+	}
+
 	return vocabbus.Noun{
-		Lemma:   row.Noun,
-		Article: art,
-		Gloss:   row.Gloss,
-		Lang:    lang,
+		Lemma:     row.Noun,
+		Article:   art,
+		Gloss:     row.Gloss,
+		Example:   row.Example,
+		ExampleEn: row.ExampleEn,
+		Lang:      lang,
 	}, nil
 }

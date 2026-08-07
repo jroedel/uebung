@@ -61,8 +61,10 @@ func toBusGradeRequest(req gradeRequest) (langcode.LangCode, []gradedResult, err
 // strong Article to its string form explicitly.
 func fromBusNounResponse(n vocabbus.Noun) batchCardResponse {
 	return batchCardResponse{
-		Lemma:   n.Lemma,
-		Article: n.Article.String(),
-		Gloss:   n.Gloss,
+		Lemma:     n.Lemma,
+		Article:   n.Article.String(),
+		Gloss:     n.Gloss,
+		Example:   n.Example,
+		ExampleEn: n.ExampleEn,
 	}
 }

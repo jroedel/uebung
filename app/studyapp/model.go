@@ -11,10 +11,17 @@ package studyapp
 // article travels with the card on purpose: this is self-paced practice, not a
 // graded exam, so the browser can reveal the answer and grade the swipe with
 // zero round-trips. Gloss is shown as feedback once the learner has answered.
+//
+// Example and ExampleEn ride along for the same reason. They are only needed for
+// the nouns a learner gets wrong, which is not known until the round is over —
+// but fetching them then would put a network round-trip between the last swipe
+// and the result panel. Shipping them with the batch keeps the whole round local.
 type batchCardResponse struct {
-	Lemma   string `json:"lemma"`
-	Article string `json:"article"`
-	Gloss   string `json:"gloss"`
+	Lemma     string `json:"lemma"`
+	Article   string `json:"article"`
+	Gloss     string `json:"gloss"`
+	Example   string `json:"example"`
+	ExampleEn string `json:"example_en"`
 }
 
 // batchResponse is a whole preloaded study session: the ordered questions plus
