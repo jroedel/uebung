@@ -36,6 +36,12 @@ type Config struct {
 	// what the tests want.
 	Log *slog.Logger
 
+	// Auth resolves a request to a learner. It is an interface declared here and
+	// satisfied by the auth app, so this package never imports that one — the
+	// layering forbids an App package importing another App package, and main
+	// does the wiring instead.
+	Auth Authenticator
+
 	// Health is polled by GET /healthz to decide whether the app can actually do
 	// its job, rather than merely being listened on. It is a func rather than a
 	// method on a store because the store is reached only through a Business port
@@ -54,6 +60,25 @@ type App struct {
 	static     fs.FS
 	log        *slog.Logger
 	health     func(context.Context) error
+	auth       Authenticator
+}
+
+// Authenticator resolves an HTTP request to the learner making it. Returning
+// false means "nobody is signed in", which every study route treats as 401.
+type Authenticator interface {
+	UserForRequest(r *http.Request) (userid.UserID, bool)
+}
+
+// SingleUser is an Authenticator that hands every request the built-in local
+// learner. It is what the tests use, and what the -single-user development flag
+// wires, so that running the deck without a mail server is still possible. It
+// must never be wired on a public deployment: it makes every visitor the same
+// person.
+type SingleUser struct{}
+
+// UserForRequest implements Authenticator.
+func (SingleUser) UserForRequest(*http.Request) (userid.UserID, bool) {
+	return userid.Local(), true
 }
 
 // New constructs an App, filling in defaults for the optional policy knobs.
@@ -76,6 +101,7 @@ func New(cfg Config) *App {
 		static:     cfg.Static,
 		log:        cfg.Log,
 		health:     cfg.Health,
+		auth:       cfg.Auth,
 	}
 }
 
@@ -93,51 +119,7 @@ func (a *App) Handler() http.Handler {
 		mux.Handle("GET /", http.FileServer(http.FS(a.static)))
 	}
 
-	return a.withLogging(mux)
-}
-
-// withLogging wraps h to emit one line per request. It is the outermost layer so
-// a request is logged whatever handles it, including 404s from the file server.
-func (a *App) withLogging(h http.Handler) http.Handler {
-	if a.log == nil {
-		return h
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		started := a.now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		h.ServeHTTP(rec, r)
-
-		// The query string is deliberately excluded: once accounts arrive it is a
-		// place login tokens can appear, and logs outlive the tokens in them.
-		a.log.Info("request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", rec.status,
-			"bytes", rec.written,
-			"duration", a.now().Sub(started),
-		)
-	})
-}
-
-// statusRecorder remembers what a handler wrote so it can be logged. WriteHeader
-// may never be called, which is why status starts at 200.
-type statusRecorder struct {
-	http.ResponseWriter
-	status  int
-	written int
-}
-
-func (s *statusRecorder) WriteHeader(code int) {
-	s.status = code
-	s.ResponseWriter.WriteHeader(code)
-}
-
-func (s *statusRecorder) Write(b []byte) (int, error) {
-	n, err := s.ResponseWriter.Write(b)
-	s.written += n
-
-	return n, err
+	return mux
 }
 
 // handleHealthz reports whether the app can serve, not merely whether it is
@@ -163,12 +145,34 @@ func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-// currentUser resolves the learner for a request. Today it is always the built-in
-// single user; this is the single seam where session- or token-derived identity
-// will attach when accounts arrive, and every downstream call already takes the
-// UserID it returns.
-func (a *App) currentUser(_ *http.Request) userid.UserID {
-	return userid.Local()
+// currentUser resolves the learner for a request, reporting false when nobody is
+// signed in.
+//
+// A nil Auth means the app was constructed without an authenticator. That is
+// treated as "no one is signed in" rather than as "everyone is the local user":
+// forgetting to wire authentication should close the app, not open it.
+func (a *App) currentUser(r *http.Request) (userid.UserID, bool) {
+	if a.auth == nil {
+		return userid.UserID{}, false
+	}
+
+	return a.auth.UserForRequest(r)
+}
+
+// requireUser resolves the learner or writes a 401 and reports false, so each
+// handler's first two lines are the whole authorisation story.
+func (a *App) requireUser(w http.ResponseWriter, r *http.Request) (userid.UserID, bool) {
+	user, ok := a.currentUser(r)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "sign in to study"})
+
+		return userid.UserID{}, false
+	}
+
+	return user, true
 }
 
 // handleBatch preloads a study session: the ordered, ready-to-swipe cards for a
@@ -194,7 +198,11 @@ func (a *App) handleBatch(w http.ResponseWriter, r *http.Request) {
 		lemmas[i] = n.Lemma
 	}
 
-	user := a.currentUser(r)
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+
 	chosen, err := a.study.Batch(ctx, user, lang, lemmas, a.now(), a.batchLimit)
 	if err != nil {
 		writeServerError(w, err)
@@ -228,7 +236,11 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	user := a.currentUser(r)
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+
 	now := a.now()
 
 	applied := 0
@@ -262,7 +274,12 @@ func (a *App) handleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sum, err := a.computeSummary(r.Context(), a.currentUser(r), lang)
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	sum, err := a.computeSummary(r.Context(), user, lang)
 	if err != nil {
 		writeServerError(w, err)
 		return

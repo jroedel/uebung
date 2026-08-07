@@ -15,6 +15,8 @@ const API = {
   batch: (lang, limit) => `/api/batch?lang=${encodeURIComponent(lang)}&limit=${limit}`,
   grade: "/api/grade",
   summary: (lang) => `/api/summary?lang=${encodeURIComponent(lang)}`,
+  me: "/auth/me",
+  requestLink: "/auth/request",
 };
 
 // Direction → article. Left = der, Up = das, Right = die. Chosen so the two
@@ -58,6 +60,11 @@ const el = {
   panel: document.getElementById("panel"),
   panelTitle: document.getElementById("panel-title"),
   panelBody: document.getElementById("panel-body"),
+  signinPanel: document.getElementById("signin-panel"),
+  signinForm: document.getElementById("signin-form"),
+  signinEmail: document.getElementById("signin-email"),
+  signinBtn: document.getElementById("signin-btn"),
+  signinBody: document.getElementById("signin-body"),
   misses: document.getElementById("misses"),
   missList: document.getElementById("miss-list"),
   againBtn: document.getElementById("again-btn"),
@@ -80,11 +87,99 @@ const state = {
   timers: [],    // pending reveal timeouts, cleared if the reveal is cut short
 };
 
+// --- sign-in ---------------------------------------------------------------
+
+// start decides what the visitor sees. Every study endpoint now needs a session,
+// so asking who we are has to come before asking for cards -- otherwise the first
+// thing a signed-out visitor gets is a failed batch request.
+async function start() {
+  hide(el.panel);
+
+  let signedIn = false;
+  try {
+    const res = await fetch(API.me, { headers: { Accept: "application/json" } });
+    signedIn = res.ok;
+  } catch (err) {
+    console.error(err);
+    showStatus("Couldn't reach the server. Check your connection and try again.");
+
+    return;
+  }
+
+  if (!signedIn) {
+    showSignIn();
+
+    return;
+  }
+
+  loadSummary();
+  loadBatch();
+}
+
+// showSignIn presents the email form. The expired case is flagged by the auth
+// callback, which redirects here with ?signin=expired rather than reporting why a
+// link failed -- expired, already used and forged all look the same on purpose.
+function showSignIn() {
+  hide(el.statusPanel);
+  hide(el.controls);
+  hide(el.stats);
+  clearStack();
+
+  if (new URLSearchParams(location.search).get("signin") === "expired") {
+    el.signinBody.textContent =
+      "That sign-in link didn\u2019t work \u2014 they expire quickly and only work once. Here\u2019s a fresh one.";
+  }
+
+  show(el.signinPanel);
+  el.signinEmail.focus();
+}
+
+async function requestLink(e) {
+  e.preventDefault();
+
+  const address = el.signinEmail.value.trim();
+  if (!address) return;
+
+  el.signinBtn.disabled = true;
+  el.signinBtn.textContent = "Sending\u2026";
+
+  try {
+    const res = await fetch(API.requestLink, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: address }),
+    });
+
+    if (res.status === 400) {
+      const body = await res.json().catch(() => ({}));
+      el.signinBody.textContent = body.error || "That doesn\u2019t look like an email address.";
+      el.signinBtn.disabled = false;
+      el.signinBtn.textContent = "Email me a link";
+
+      return;
+    }
+
+    // Anything else is treated as sent. The server answers the same way for a
+    // known address, an unknown one and a rate-limited one, so that no one can
+    // use this form to discover who has an account -- and the client must not
+    // undo that by reporting the difference.
+    el.signinForm.hidden = true;
+    el.signinBody.textContent =
+      `If ${address} can receive mail, a sign-in link is on its way. It works once and expires in 15 minutes.`;
+  } catch (err) {
+    console.error(err);
+    el.signinBody.textContent = "Couldn\u2019t reach the server. Check your connection and try again.";
+    el.signinBtn.disabled = false;
+    el.signinBtn.textContent = "Email me a link";
+  }
+}
+
 // --- data ------------------------------------------------------------------
 
 async function loadBatch() {
   showStatus("Loading your cards…");
   hide(el.panel);
+  hide(el.signinPanel);
   // Drop any reveal still in flight, so a timer from the last batch cannot
   // advance an index that now points into a fresh set of cards.
   clearTimers();
@@ -92,6 +187,11 @@ async function loadBatch() {
   state.locked = false;
   try {
     const res = await fetch(API.batch(API.lang, API.limit), { headers: { Accept: "application/json" } });
+    if (res.status === 401) {
+      showSignIn();
+
+      return;
+    }
     if (!res.ok) throw new Error(`batch failed: ${res.status}`);
     const data = await res.json();
     state.cards = data.cards || [];
@@ -513,5 +613,6 @@ el.controls.addEventListener("click", (e) => {
 
 el.againBtn.addEventListener("click", loadBatch);
 
-loadSummary();
-loadBatch();
+el.signinForm.addEventListener("submit", requestLink);
+
+start();
