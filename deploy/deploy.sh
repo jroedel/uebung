@@ -300,9 +300,22 @@ install_htaccess() {
 	tmp="$(mktemp)"
 	sed "s/__APP_PORT__/$APP_PORT/g" "$SCRIPT_DIR/uebung.htaccess" >"$tmp"
 
+	# 644 before pushing, and again after.
+	#
+	# mktemp creates files mode 600, and scp carries the source mode in the
+	# protocol, so the .htaccess landed unreadable by Apache. Apache then answered
+	# every request with 403 and the body "Server unable to read htaccess file,
+	# denying access to be safe" -- correct behaviour, and a failure mode that looks
+	# exactly like a wrong document root unless you read the body.
+	#
+	# The remote chmod is not redundant: whether scp propagates the mode depends on
+	# the implementation, so the mode is asserted where it matters.
+	chmod 644 "$tmp"
+
 	remote "mkdir -p $DOCROOT"
 	push "$tmp" "$DOCROOT/.htaccess"
 	rm -f "$tmp"
+	remote "chmod 644 $DOCROOT/.htaccess"
 
 	# A stale challenge directory left by an earlier FileAuth attempt is harmless,
 	# but the docroot should otherwise hold nothing: everything else is served by
@@ -531,7 +544,8 @@ EOF
 		warn "the new binary has been KEPT — this is an Apache/document-root problem, not a bad build."
 		warn "check, in this order:"
 		warn "  1. konsoleH document root is /uebung.club/public"
-		warn "  2. $DOCROOT/.htaccess exists and Apache may read it"
+		warn "  2. $DOCROOT/.htaccess exists AND is mode 644 — Apache must be able to read it"
+		warn "     (curl the site: a body saying \"unable to read htaccess file\" means exactly this)"
 		warn "  3. $APP_DIR is mode 711 — Apache must traverse it to reach public/"
 		warn "     (403 on every path, including ones that do not exist, means exactly this)"
 		exit 1
