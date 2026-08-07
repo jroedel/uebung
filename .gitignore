@@ -20,6 +20,11 @@ local/
 .env
 .env.local
 
+# Deploy target: host, account and port. Deliberately untracked -- deploy.sh is
+# committed, the identity of the machine it talks to is not.
+deploy/deploy.env
+deploy/.uebung-linux
+
 # uebung runtime
 /uebung
 uebung.db

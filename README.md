@@ -211,6 +211,64 @@ with `==`.
 `memdb` remains for tests: it holds Business models directly, needs no file, and
 keeps the whole suite runnable offline.
 
+## Deploying
+
+`deploy/deploy.sh` does the whole thing. **The script is committed; the server's
+identity is not** — host, account and port come from `deploy/deploy.env`, which is
+gitignored:
+
+```bash
+cp deploy/deploy.env.example deploy/deploy.env   # then fill it in
+deploy/deploy.sh probe      # what does this server support? read-only
+deploy/deploy.sh install    # one-time: dirs, supervisor, cron, .htaccess
+deploy/deploy.sh            # build, upload, restart, health-check
+```
+
+Also: `backup`, `status`, `logs`, and `--skip-tests`.
+
+### How it fits together
+
+Apache terminates TLS with the konsoleH Let's Encrypt certificate and proxies to
+the app on **loopback only**, so the app never speaks TLS and is never reachable
+except through the proxy. `deploy/uebung.htaccess` does that with a `RewriteRule
+… [P]` — `ProxyPass` is illegal in `.htaccess`, the `[P]` flag is the supported
+way on konsoleH.
+
+That rule **excludes `/.well-known/`**, which matters more than it looks:
+konsoleH's FileAuth writes certificate challenges into the document root, and a
+catch-all proxy hands them to the app instead, which quietly breaks renewal.
+
+**The binary and the database live outside the document root** (`~/uebung`, not
+`~/public_html/...`). `uebung.db` holds every account's address and their session
+hashes; under the docroot it would be one broken `.htaccess` away from being
+downloadable. Only `.htaccess` belongs there, and `install` warns about any other
+file it finds.
+
+### Secrets
+
+The SMTP password is never uploaded and never appears in a flag — a command line
+is visible in `ps` to every other account on the machine. It lives on the server
+in `~/uebung/uebung.env` (mode 600), written once by hand; `deploy.sh` preserves
+it across deploys and warns if it is missing. Without it the app logs sign-in
+links instead of sending them, which is a survivable degraded state rather than a
+refusal to start.
+
+### Staying up without root
+
+No root is needed. `SUPERVISOR=systemd` uses `systemctl --user` (run
+`loginctl enable-linger <account>` once, or the service dies at logout);
+`SUPERVISOR=nohup` uses `deploy/supervise.sh` with an `@reboot` entry plus a
+five-minute watchdog. `deploy.sh probe` tells you which the host supports.
+
+### Why the deploy is safe to repeat
+
+The app is stopped, *then* the database is copied — a copy taken while SQLite is
+mid-transaction can be torn, so this ordering is deliberate. The binary is
+replaced by rename rather than rewritten in place (overwriting a running
+executable gives `ETXTBSY`; swapping the inode does not), the previous one is
+kept, and a failed `/healthz` check restores it, restarts, prints the tail of the
+log and exits non-zero.
+
 ## Development
 
 ```bash
