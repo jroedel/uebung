@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jroedel/uebung/business/types/email"
+	"github.com/jroedel/uebung/business/types/nickname"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/secret"
 )
@@ -35,6 +36,13 @@ import (
 // can an attacker probing the callback endpoint.
 var ErrInvalidCredential = errors.New("identitybus: invalid or expired credential")
 
+// ErrNicknameTaken is returned when a display name is already held by another
+// account. Unlike ErrInvalidCredential, this one is meant to be shown: a learner
+// who cannot have the name they asked for needs to know that, and a nickname is
+// public anyway, so saying "taken" reveals nothing that reading the leaderboard
+// would not.
+var ErrNicknameTaken = errors.New("identitybus: that nickname is already taken")
+
 // Storer is the persistence port for accounts, login tokens and sessions.
 type Storer interface {
 	// UserByEmail returns the account for an address. found is false when there
@@ -44,7 +52,28 @@ type Storer interface {
 	// UserByID returns the account for an id.
 	UserByID(ctx context.Context, id userid.UserID) (User, bool, error)
 
+	// UserByNickname returns the account holding a display name, comparing on
+	// the folded form so that names differing only in case or separators are one
+	// name. Used to check a suggestion before offering it.
+	UserByNickname(ctx context.Context, name nickname.Nickname) (User, bool, error)
+
+	// SetNickname assigns a display name to an account, reporting false if
+	// another account already holds it.
+	//
+	// Like MarkLoginTokenUsed, this must decide the conflict in storage rather
+	// than by a read-then-write here. Two people accepting the same suggested
+	// name at the same moment is not a hypothetical — the suggestion is offered
+	// to everyone who has not chosen one, from a pool that is finite — and a
+	// check followed by a write would let both succeed and leave two accounts
+	// sharing a name on a public list.
+	SetNickname(ctx context.Context, id userid.UserID, name nickname.Nickname) (bool, error)
+
 	// SaveUser creates or replaces an account by its ID.
+	//
+	// It does not write the nickname; SetNickname owns that column. Splitting
+	// them keeps the uniqueness decision in one statement, and means the
+	// ordinary sign-in path — which calls SaveUser on every redemption — cannot
+	// disturb a name it was not asked to change.
 	SaveUser(ctx context.Context, u User) error
 
 	// SaveLoginToken records an issued magic link.
@@ -84,6 +113,16 @@ type Mailer interface {
 // ids; production passes a UUID generator.
 type IDMaker func() (userid.UserID, error)
 
+// NameMaker proposes display names for learners who would rather not invent one.
+//
+// attempt is how many previous proposals turned out to be taken, so an
+// implementation can widen its search rather than offering from the same small
+// space forever. It is a port for the same reason Mailer is: the word lists are
+// data, and this package should not have to be rebuilt to change them.
+type NameMaker interface {
+	Generate(attempt int) (nickname.Nickname, error)
+}
+
 // Config tunes a Business. Zero values fall back to the defaults in NewBusiness.
 type Config struct {
 	// TokenTTL bounds how long a magic link works. Short, because the link is a
@@ -104,6 +143,7 @@ type Config struct {
 	NewID  IDMaker
 	Mailer Mailer
 	Storer Storer
+	Namer  NameMaker
 }
 
 // Business is the identity core.
@@ -111,6 +151,7 @@ type Business struct {
 	store      Storer
 	mailer     Mailer
 	newID      IDMaker
+	namer      NameMaker
 	now        func() time.Time
 	tokenTTL   time.Duration
 	sessionTTL time.Duration
@@ -139,6 +180,9 @@ func NewBusiness(cfg Config) (*Business, error) {
 	if cfg.NewID == nil {
 		return nil, errors.New("identitybus: a NewID is required")
 	}
+	if cfg.Namer == nil {
+		return nil, errors.New("identitybus: a Namer is required")
+	}
 
 	now := cfg.Now
 	if now == nil {
@@ -159,6 +203,7 @@ func NewBusiness(cfg Config) (*Business, error) {
 		store:      cfg.Storer,
 		mailer:     cfg.Mailer,
 		newID:      cfg.NewID,
+		namer:      cfg.Namer,
 		now:        now,
 		tokenTTL:   tokenTTL,
 		sessionTTL: sessionTTL,
@@ -363,6 +408,121 @@ func (b *Business) Logout(ctx context.Context, rawSession string) error {
 	}
 
 	return nil
+}
+
+// --- nicknames --------------------------------------------------------------
+
+// suggestAttempts bounds how many candidates SuggestNickname will try before
+// giving up, and how many times AssignNickname will retry a losing race.
+//
+// Each attempt past the third carries a number, so the space being drawn from
+// grows rather than repeating; six is far more than enough to find a free name
+// and small enough that a storage problem cannot turn into a long loop.
+const suggestAttempts = 6
+
+// SuggestNickname proposes a display name that is currently free.
+//
+// It reserves nothing. The name is a suggestion to show someone who has not
+// picked one — "skip, and be Blaue Eule" — and between showing it and their
+// accepting it, somebody else may take it. That race is handled where it is
+// decided, in AssignNickname, rather than by holding a reservation that would
+// need its own expiry and its own cleanup.
+func (b *Business) SuggestNickname(ctx context.Context) (nickname.Nickname, error) {
+	for attempt := range suggestAttempts {
+		name, err := b.namer.Generate(attempt)
+		if err != nil {
+			return nickname.Nickname{}, fmt.Errorf("identitybus: generating nickname: %w", err)
+		}
+
+		free, err := b.nicknameIsFree(ctx, name)
+		if err != nil {
+			return nickname.Nickname{}, err
+		}
+		if free {
+			return name, nil
+		}
+	}
+
+	return nickname.Nickname{}, errors.New("identitybus: could not find a free nickname to suggest")
+}
+
+// SetNickname gives an account the name it asked for, and is the path behind
+// both choosing a first name and renaming later.
+//
+// Renaming frees the previous name immediately. That is a deliberate choice
+// rather than an oversight: holding a name in reserve after its owner has left
+// it would need an expiry policy, and the alternative harm — somebody taking a
+// name a person has just abandoned — is one this app has no reason to expect
+// yet. It is worth revisiting once names are publicly visible and therefore
+// publicly worth squatting.
+func (b *Business) SetNickname(ctx context.Context, id userid.UserID, name nickname.Nickname) (User, error) {
+	if name.IsZero() {
+		return User{}, errors.New("identitybus: a nickname is required")
+	}
+
+	user, found, err := b.store.UserByID(ctx, id)
+	if err != nil {
+		return User{}, fmt.Errorf("identitybus: loading account: %w", err)
+	}
+	if !found {
+		return User{}, ErrInvalidCredential
+	}
+
+	// Note that re-spelling a name you already hold — "blaue eule" to "Blaue
+	// Eule" — folds to the key your own row already has. The store excludes the
+	// holder's own row from the conflict, so this succeeds rather than colliding
+	// with itself.
+	claimed, err := b.store.SetNickname(ctx, id, name)
+	if err != nil {
+		return User{}, fmt.Errorf("identitybus: setting nickname: %w", err)
+	}
+	if !claimed {
+		return User{}, ErrNicknameTaken
+	}
+
+	user.Nickname = name
+
+	return user, nil
+}
+
+// AssignNickname gives an account a generated name. This is what "skip" does:
+// everyone ends up with a name, and a learner who does not want to choose one
+// still gets something a leaderboard can print.
+//
+// It generates and claims in a loop rather than trusting an earlier suggestion,
+// because the name shown on the skip button may have been taken in the meantime.
+// Losing that race is silent by design — the person asked not to think about
+// this, so handing them a different name is a better answer than an error.
+func (b *Business) AssignNickname(ctx context.Context, id userid.UserID) (User, error) {
+	for attempt := range suggestAttempts {
+		name, err := b.namer.Generate(attempt)
+		if err != nil {
+			return User{}, fmt.Errorf("identitybus: generating nickname: %w", err)
+		}
+
+		user, err := b.SetNickname(ctx, id, name)
+		if errors.Is(err, ErrNicknameTaken) {
+			continue
+		}
+		if err != nil {
+			return User{}, err
+		}
+
+		return user, nil
+	}
+
+	return User{}, errors.New("identitybus: could not find a free nickname to assign")
+}
+
+// nicknameIsFree reports whether no account holds a name, comparing on the
+// folded form.
+func (b *Business) nicknameIsFree(ctx context.Context, name nickname.Nickname) (bool, error) {
+	_, found, err := b.store.UserByNickname(ctx, name)
+	if err != nil {
+		return false, fmt.Errorf("identitybus: checking nickname: %w", err)
+	}
+
+	return !found, nil
 }
 
 // Purge removes expired tokens and sessions. Housekeeping only — every check

@@ -28,6 +28,7 @@ import (
 	"github.com/jroedel/uebung/app/studyapp"
 	"github.com/jroedel/uebung/business/domain/identity/identitybus"
 	"github.com/jroedel/uebung/business/domain/identity/mailers/loginmail"
+	"github.com/jroedel/uebung/business/domain/identity/nicknamer"
 	identitydb "github.com/jroedel/uebung/business/domain/identity/stores/sqlitedb"
 	studydb "github.com/jroedel/uebung/business/domain/study/stores/sqlitedb"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
@@ -105,9 +106,18 @@ func run() error {
 	// visible in ps output to every user on a shared machine.
 	sender := buildSender(log, *smtpHost, *smtpPort, *smtpUser, os.Getenv("UEBUNG_SMTP_PASSWORD"), *mailFrom)
 
+	// The word lists are validated as they load, so a badly edited entry stops
+	// the server here with the offending word named rather than surfacing later
+	// as a name some fraction of learners cannot be given.
+	namer, err := nicknamer.New(nicknamer.Config{})
+	if err != nil {
+		return fmt.Errorf("preparing nicknames: %w", err)
+	}
+
 	identity, err := identitybus.NewBusiness(identitybus.Config{
 		Storer:   identityStore,
 		Mailer:   loginmail.New(sender, appName, 15*time.Minute),
+		Namer:    namer,
 		LinkBase: *linkBase,
 		NewID:    newUserID,
 		Now:      time.Now,

@@ -13,6 +13,7 @@ import (
 
 	"github.com/jroedel/uebung/business/domain/identity/identitybus"
 	"github.com/jroedel/uebung/business/types/email"
+	"github.com/jroedel/uebung/business/types/nickname"
 	"github.com/jroedel/uebung/business/types/userid"
 )
 
@@ -55,9 +56,66 @@ func (s *Store) UserByID(_ context.Context, id userid.UserID) (identitybus.User,
 	return u, ok, nil
 }
 
+// UserByNickname finds an account by the folded form of a name, matching what
+// the SQL store's unique index compares.
+func (s *Store) UserByNickname(_ context.Context, name nickname.Nickname) (identitybus.User, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	fold := name.Fold()
+	for _, u := range s.users {
+		if !u.Nickname.IsZero() && u.Nickname.Fold() == fold {
+			return u, true, nil
+		}
+	}
+
+	return identitybus.User{}, false, nil
+}
+
+// SetNickname claims a name, reporting false if another account holds it.
+//
+// The scan and the write happen under one lock, which is the in-memory
+// equivalent of the SQL store's single conditional UPDATE. Reproducing that
+// faithfully is the point of this store: the race it closes — two people
+// accepting the same suggestion at once — is one the business tests need to be
+// able to exercise without a database.
+func (s *Store) SetNickname(_ context.Context, id userid.UserID, name nickname.Nickname) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, ok := s.users[id.String()]
+	if !ok {
+		return false, nil
+	}
+
+	// The holder's own row does not count as a conflict, so re-spelling a name
+	// you already have succeeds.
+	fold := name.Fold()
+	for otherID, other := range s.users {
+		if otherID != id.String() && !other.Nickname.IsZero() && other.Nickname.Fold() == fold {
+			return false, nil
+		}
+	}
+
+	user.Nickname = name
+	s.users[id.String()] = user
+
+	return true, nil
+}
+
+// SaveUser stores an account, leaving the nickname as it was.
+//
+// The carve-out mirrors the SQL store, where the nickname is simply not among
+// the columns this statement writes. Without it the in-memory store would be the
+// more permissive of the two, and a test would pass here on behaviour that the
+// real database does not have.
 func (s *Store) SaveUser(_ context.Context, u identitybus.User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if existing, ok := s.users[u.ID.String()]; ok {
+		u.Nickname = existing.Nickname
+	}
 
 	s.users[u.ID.String()] = u
 

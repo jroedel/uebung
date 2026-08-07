@@ -1,0 +1,63 @@
+[
+	"blau", "rot", "gelb", "grün", "schwarz", "weiß", "grau", "braun",
+	"golden", "silbern", "bronzen", "purpurn", "violett", "hellblau",
+	"meerblau", "rostrot", "blutrot", "feuerrot", "kirschrot", "moosgrün",
+	"tannengrün", "dunkelrot", "dunkelblau", "hellgrün", "hellgrau",
+
+	"hell", "dunkl", "licht", "leuchtend", "glänzend", "strahlend",
+	"schimmernd", "funkelnd", "glitzernd", "matt", "blass", "bleich",
+	"bunt", "farbig", "schillernd",
+
+	"groß", "klein", "winzig", "riesig", "mächtig", "gewaltig", "breit",
+	"schmal", "dünn", "dick", "rund", "eckig", "spitz", "flach", "tief",
+	"hoh", "niedrig", "lang", "kurz", "weit", "zierlich", "stämmig",
+	"schlank", "plump",
+
+	"schnell", "flink", "rasch", "hurtig", "behend", "träge", "langsam",
+	"eilig", "hastig", "sprunghaft", "tanzend", "hüpfend", "fliegend",
+	"schwebend", "rollend", "wandernd", "kletternd", "rennend", "springend",
+	"segelnd", "treibend", "gleitend", "huschend", "trippelnd",
+
+	"mutig", "tapfer", "kühn", "wagemutig", "furchtlos", "keck", "frech",
+	"kess", "schlau", "listig", "klug", "weise", "gewitzt", "pfiffig",
+	"findig", "neugierig", "eifrig", "fleißig", "emsig", "geduldig",
+	"ruhig", "gelassen", "sanft", "mild", "zart", "freundlich", "herzlich",
+	"gütig", "edl", "nobl", "höflich", "artig", "brav", "treu", "ehrlich",
+	"redlich", "stolz", "würdig", "erhaben", "heiter", "fröhlich", "lustig",
+	"munter", "fidel", "vergnügt", "froh",
+
+	"selig", "verträumt", "versonnen", "still", "schweigsam", "scheu",
+	"schüchtern", "bescheiden", "demütig", "wild", "ungestüm", "stürmisch",
+	"wacker", "zäh", "störrisch", "trotzig", "grimmig", "zornig", "bissig",
+	"grantig", "mürrisch", "brummig", "knurrig", "launisch", "tollkühn",
+
+	"frisch", "klar", "rein", "sauber", "glatt", "rau", "weich", "hart",
+	"fest", "locker", "luftig", "duftig", "wolkig", "neblig", "sonnig",
+	"schattig", "windig", "frostig", "eisig", "kalt", "kühl", "warm",
+	"heiß", "lau", "feucht", "trocken", "salzig", "süß", "bitter",
+	"würzig", "herb", "saur", "moosig", "sandig", "steinig", "felsig",
+	"blumig", "waldig", "grasig",
+
+	"alt", "jung", "neu", "uralt", "betagt", "müde", "wach", "hungrig",
+	"satt", "durstig", "gierig", "naschhaft",
+
+	"leise", "laut", "lärmend", "singend", "summend", "brummend",
+	"pfeifend", "klingend", "tönend", "hallend", "flüsternd",
+
+	"glücklich", "zufrieden", "dankbar", "seltsam", "kurios", "drollig",
+	"putzig", "spaßig", "schelmisch", "verspielt", "neckisch", "prächtig",
+	"herrlich", "köstlich", "festlich", "feierlich", "stattlich",
+	"ansehnlich", "elegant", "fein", "vornehm", "schlicht", "einfach",
+	"schmuck",
+
+	"geheim", "heimlich", "verborgen", "unsichtbar", "zauberhaft",
+	"magisch", "mystisch", "sagenhaft", "verwegen", "traumhaft",
+
+	"eisern", "stählern", "hölzern", "gläsern", "seiden", "samten",
+	"wollig", "flauschig", "leicht", "schwer", "wuchtig", "steinern",
+	"ledern", "tönern",
+
+	"fern", "nah", "heimisch", "fremd", "einsam", "nordisch", "südlich",
+	"östlich", "westlich", "alpin", "arktisch", "tropisch", "nächtlich",
+	"abendlich", "sommerlich", "winterlich", "herbstlich"
+]

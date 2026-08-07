@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/jroedel/uebung/business/domain/identity/identitybus"
-	"github.com/jroedel/uebung/business/types/email"
+	"github.com/jroedel/uebung/business/types/nickname"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/secret"
 )
@@ -119,6 +119,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /auth/callback", a.handleCallback)
 	mux.HandleFunc("POST /auth/logout", a.handleLogout)
 	mux.HandleFunc("GET /auth/me", a.handleMe)
+	mux.HandleFunc("POST /auth/nickname", a.handleSetNickname)
+	mux.HandleFunc("POST /auth/nickname/skip", a.handleSkipNickname)
 
 	return mux
 }
@@ -279,6 +281,10 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // handleMe reports the signed-in account, or 401 when there is none. The client
 // calls this on load to choose between the sign-in screen and the deck.
+//
+// For an account with no nickname yet it also carries a suggestion, so the
+// client can render the whole prompt — field and skip offer — from one response
+// instead of asking again for the name to put on the button.
 func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 	user, err := a.identity.Authenticate(r.Context(), a.sessionSecret(r))
 	if err != nil {
@@ -287,7 +293,121 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, fromBusUserResponse(user))
+	var suggestion nickname.Nickname
+	if !user.HasNickname() {
+		suggestion, err = a.identity.SuggestNickname(r.Context())
+		if err != nil {
+			// Not fatal. A missing suggestion costs the skip button, not the
+			// prompt, and refusing to say who is signed in over it would keep a
+			// learner out of the app entirely.
+			a.log.Error("suggesting a nickname", "err", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, fromBusUserResponse(user, suggestion))
+}
+
+// handleSetNickname chooses or changes the public display name.
+//
+// One endpoint serves both because they are the same operation: the only
+// difference is whether a name was there before, and neither the storage claim
+// nor the validation cares.
+func (a *App) handleSetNickname(w http.ResponseWriter, r *http.Request) {
+	user, err := a.identity.Authenticate(r.Context(), a.sessionSecret(r))
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "not signed in"})
+
+		return
+	}
+
+	var req setNicknameRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "expected a JSON body with a nickname field"})
+
+		return
+	}
+
+	name, err := toBusNickname(req)
+	if err != nil {
+		// The parse errors are written to be read by a person, and unlike the
+		// sign-in path there is nothing to conceal here: a nickname is public,
+		// so explaining exactly why one was refused leaks nothing and saves a
+		// learner from guessing.
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: nicknameErrorMessage(err)})
+
+		return
+	}
+
+	updated, err := a.identity.SetNickname(r.Context(), user.ID, name)
+	switch {
+	case errors.Is(err, identitybus.ErrNicknameTaken):
+		// 409 rather than 400: the request was well-formed, the world was not
+		// cooperative. The client retries with a different name.
+		writeJSON(w, http.StatusConflict, errorResponse{Error: "someone already has that name — try another"})
+
+		return
+	case err != nil:
+		a.log.Error("setting nickname", "user", user.ID.String(), "err", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not save that name just now; please try again"})
+
+		return
+	}
+
+	a.log.Info("nickname set", "user", updated.ID.String())
+	writeJSON(w, http.StatusOK, fromBusUserResponse(updated, nickname.Nickname{}))
+}
+
+// handleSkipNickname accepts a generated name on the learner's behalf.
+//
+// It generates afresh rather than taking a name from the request. The suggestion
+// the client is showing may have been taken since it was offered, and more to
+// the point, accepting a client-supplied name here would make this a second way
+// to set an arbitrary nickname — one that skipped every rule the other endpoint
+// applies.
+func (a *App) handleSkipNickname(w http.ResponseWriter, r *http.Request) {
+	user, err := a.identity.Authenticate(r.Context(), a.sessionSecret(r))
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "not signed in"})
+
+		return
+	}
+
+	// Skipping when a name is already set would silently replace it, which is
+	// not what any button called "skip" should do.
+	if user.HasNickname() {
+		writeJSON(w, http.StatusOK, fromBusUserResponse(user, nickname.Nickname{}))
+
+		return
+	}
+
+	updated, err := a.identity.AssignNickname(r.Context(), user.ID)
+	if err != nil {
+		a.log.Error("assigning a nickname", "user", user.ID.String(), "err", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not pick a name just now; please try again"})
+
+		return
+	}
+
+	a.log.Info("nickname assigned", "user", updated.ID.String())
+	writeJSON(w, http.StatusOK, fromBusUserResponse(updated, nickname.Nickname{}))
+}
+
+// nicknameErrorMessage turns a validation failure into something worth reading.
+//
+// The three cases are genuinely different to the person on the other end: one is
+// a typo they can fix, one is a rule they could not have known, and one is a
+// decision we are not going to argue about. Matching on the sentinel errors
+// rather than passing the raw text through also keeps the package-prefixed
+// wording of the Business layer out of the UI.
+func nicknameErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, nickname.ErrReservedNickname):
+		return "that name is reserved — please choose another"
+	case errors.Is(err, nickname.ErrProfaneNickname):
+		return "please choose a different name"
+	default:
+		return "a name is 3 to 24 letters, digits, spaces or hyphens"
+	}
 }
 
 // sessionSecret reads the session cookie under whichever name this deployment
@@ -357,12 +477,6 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
-}
-
-// toBusEmail parses the request primitive into the strong type. All validation
-// for this boundary happens here and nowhere else.
-func toBusEmail(raw string) (email.Email, error) {
-	return email.Parse(raw)
 }
 
 // UserForRequest resolves a request's session cookie to a learner id.

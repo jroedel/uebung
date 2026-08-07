@@ -277,13 +277,20 @@ body {
 .miss-nominative { color: var(--muted); font-weight: 600; white-space: nowrap; }
 .miss-translation { margin: 2px 0 0; color: var(--muted); font-size: 13px; font-style: italic; }
 .account { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+/* The nickname is the public name, so it carries the weight in the header line
+   while the address stays quiet beside it. */
+#account-nickname { color: var(--text); font-weight: 600; }
+#account-nickname:not(:empty) + #rename-btn + #account-email::before { content: "· "; }
 .linkish {
   background: none; border: 0; padding: 0 0 0 8px; cursor: pointer;
   color: var(--der); font: inherit; text-decoration: underline;
 }
 
-/* Sign-in */
-#signin-form { display: flex; flex-direction: column; gap: 10px; }
+/* Sign-in and nickname */
+#signin-form, #nickname-form { display: flex; flex-direction: column; gap: 10px; }
+/* The skip offer sits under the form as an aside, not as a second call to
+   action: choosing a name is the intended path. */
+#nickname-skip-line { text-align: center; }
 .field {
   border: 1px solid rgba(154, 163, 199, 0.35);
   border-radius: 14px;

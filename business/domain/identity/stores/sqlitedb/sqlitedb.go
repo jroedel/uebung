@@ -23,6 +23,7 @@ import (
 
 	"github.com/jroedel/uebung/business/domain/identity/identitybus"
 	"github.com/jroedel/uebung/business/types/email"
+	"github.com/jroedel/uebung/business/types/nickname"
 	"github.com/jroedel/uebung/business/types/userid"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
@@ -63,6 +64,31 @@ CREATE INDEX IF NOT EXISTS idx_login_tokens_expires ON login_tokens(expires);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires);
 `
 
+// nicknameColumns are added to users after the fact, because the table above
+// already exists in every deployment.
+//
+// SQLite has no ADD COLUMN IF NOT EXISTS, so addNicknameColumns consults
+// PRAGMA table_info first. Both are declared with a default of ” rather than
+// as nullable: an account without a name has one specific state, and having it
+// be either NULL or ” depending on whether the row predates this change is a
+// distinction nothing downstream wants to care about.
+const nicknameSchema = `
+ALTER TABLE users ADD COLUMN nickname TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN nickname_fold TEXT NOT NULL DEFAULT '';
+`
+
+// The uniqueness index is partial — WHERE nickname_fold <> ” — and that is the
+// whole reason this works on a populated database. Every existing row has an
+// empty fold, so a plain UNIQUE index would find them all in conflict with each
+// other and refuse to be created.
+//
+// It is built on the folded form rather than on the displayed one, so that names
+// differing only in case or separators cannot both exist. See nickname.Fold.
+const nicknameIndex = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_nickname_fold
+	ON users(nickname_fold) WHERE nickname_fold <> '';
+`
+
 // Store is the SQLite identity store. It borrows an existing *sql.DB so identity
 // and study share one file, one connection pool and therefore one writer.
 type Store struct {
@@ -82,10 +108,69 @@ func Open(ctx context.Context, db *sql.DB) (*Store, error) {
 		return nil, fmt.Errorf("sqlitedb: applying identity schema: %w", err)
 	}
 
+	if err := addNicknameColumns(ctx, db); err != nil {
+		return nil, err
+	}
+
+	if _, err := db.ExecContext(ctx, nicknameIndex); err != nil {
+		return nil, fmt.Errorf("sqlitedb: creating nickname index: %w", err)
+	}
+
 	return &Store{db: db}, nil
 }
 
-const userColumns = `id, email, verified, created, last_seen`
+// addNicknameColumns brings an existing users table up to date, and does nothing
+// on one that is already current.
+//
+// The check is a read of PRAGMA table_info rather than an ALTER that tolerates
+// its own failure. Swallowing the "duplicate column name" error would work, but
+// it would also swallow every other reason an ALTER can fail, and a migration
+// that cannot tell "already done" from "went wrong" is one that reports success
+// on a half-changed table.
+func addNicknameColumns(ctx context.Context, db *sql.DB) error {
+	has, err := hasColumn(ctx, db, "users", "nickname")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+
+	if _, err := db.ExecContext(ctx, nicknameSchema); err != nil {
+		return fmt.Errorf("sqlitedb: adding nickname columns: %w", err)
+	}
+
+	return nil
+}
+
+func hasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	// PRAGMA does not accept a bound parameter for the table name. The value is
+	// a constant from this package rather than anything caller-supplied, so
+	// there is nothing here to inject.
+	rows, err := db.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, fmt.Errorf("sqlitedb: reading %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, fmt.Errorf("sqlitedb: reading %s columns: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("sqlitedb: reading %s columns: %w", table, err)
+	}
+
+	return false, nil
+}
+
+const userColumns = `id, email, nickname, verified, created, last_seen`
 
 func (s *Store) UserByEmail(ctx context.Context, addr email.Email) (identitybus.User, bool, error) {
 	const q = `SELECT ` + userColumns + ` FROM users WHERE email = ?`
@@ -99,10 +184,46 @@ func (s *Store) UserByID(ctx context.Context, id userid.UserID) (identitybus.Use
 	return s.scanUser(s.db.QueryRowContext(ctx, q, id.String()))
 }
 
+// UserByNickname looks an account up by the folded form of a display name, which
+// is the same key the unique index is built on — so this finds exactly the rows
+// that would refuse to coexist with name.
+func (s *Store) UserByNickname(ctx context.Context, name nickname.Nickname) (identitybus.User, bool, error) {
+	const q = `SELECT ` + userColumns + ` FROM users WHERE nickname_fold = ?`
+
+	return s.scanUser(s.db.QueryRowContext(ctx, q, name.Fold()))
+}
+
+// SetNickname claims a display name in one statement.
+//
+// The NOT EXISTS subquery is the uniqueness decision, and it excludes the
+// account doing the claiming — so re-spelling a name you already hold succeeds
+// instead of colliding with your own row. The unique index behind it means that
+// even if two of these run at once, only one can commit; the subquery is what
+// turns the loser into a clean false rather than a constraint error the caller
+// would have to parse a driver message to recognise.
+func (s *Store) SetNickname(ctx context.Context, id userid.UserID, name nickname.Nickname) (bool, error) {
+	const q = `
+UPDATE users SET nickname = ?, nickname_fold = ?
+WHERE id = ?
+	AND NOT EXISTS (SELECT 1 FROM users WHERE nickname_fold = ? AND id <> ?)`
+
+	res, err := s.db.ExecContext(ctx, q, name.String(), name.Fold(), id.String(), name.Fold(), id.String())
+	if err != nil {
+		return false, fmt.Errorf("sqlitedb: setting nickname: %w", err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlitedb: setting nickname: %w", err)
+	}
+
+	return n == 1, nil
+}
+
 func (s *Store) scanUser(row *sql.Row) (identitybus.User, bool, error) {
 	var r dbUser
 
-	err := row.Scan(&r.ID, &r.Email, &r.Verified, &r.Created, &r.LastSeen)
+	err := row.Scan(&r.ID, &r.Email, &r.Nickname, &r.Verified, &r.Created, &r.LastSeen)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return identitybus.User{}, false, nil
@@ -118,9 +239,19 @@ func (s *Store) scanUser(row *sql.Row) (identitybus.User, bool, error) {
 	return u, true, nil
 }
 
+// saveUserColumns is deliberately not userColumns: the nickname is absent from
+// both halves of this statement.
+//
+// SetNickname owns that column, together with the folded key beside it that the
+// unique index is built on. Writing the pair from here as well would mean two
+// statements had to agree on deriving one from the other, and the sign-in path —
+// which runs this on every redemption — would be one stale in-memory User away
+// from clearing a name it was never asked to touch.
+const saveUserColumns = `id, email, verified, created, last_seen`
+
 func (s *Store) SaveUser(ctx context.Context, u identitybus.User) error {
 	const q = `
-INSERT INTO users (` + userColumns + `) VALUES (?, ?, ?, ?, ?)
+INSERT INTO users (` + saveUserColumns + `) VALUES (?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	email = excluded.email, verified = excluded.verified, last_seen = excluded.last_seen`
 
@@ -239,8 +370,14 @@ func (s *Store) DeleteExpired(ctx context.Context, now time.Time) error {
 // --- rows and converters ---------------------------------------------------
 
 type dbUser struct {
-	ID       string
-	Email    string
+	ID    string
+	Email string
+
+	// Nickname is the display form. The folded key that sits beside it in the
+	// table is derived on write and never read back, so it is not a field here:
+	// it is an index key, not data.
+	Nickname string
+
 	Verified int
 	Created  string
 	LastSeen string
@@ -270,6 +407,7 @@ func toDBUser(u identitybus.User) dbUser {
 	return dbUser{
 		ID:       u.ID.String(),
 		Email:    u.Email.String(),
+		Nickname: u.Nickname.String(),
 		Verified: verified,
 		Created:  formatTime(u.Created),
 		LastSeen: formatTime(u.LastSeen),
@@ -287,6 +425,11 @@ func toBusUser(r dbUser) (identitybus.User, error) {
 		return identitybus.User{}, fmt.Errorf("email: %w", err)
 	}
 
+	name, err := toBusNickname(r.Nickname)
+	if err != nil {
+		return identitybus.User{}, err
+	}
+
 	created, err := parseTime("created", r.Created)
 	if err != nil {
 		return identitybus.User{}, err
@@ -300,10 +443,32 @@ func toBusUser(r dbUser) (identitybus.User, error) {
 	return identitybus.User{
 		ID:       id,
 		Email:    addr,
+		Nickname: name,
 		Verified: r.Verified != 0,
 		Created:  created,
 		LastSeen: lastSeen,
 	}, nil
+}
+
+// toBusNickname parses the stored display name, treating the empty string as
+// "not chosen yet" rather than as an error.
+//
+// That empty case is not a tolerance for bad data: it is the state every account
+// is created in and the state every row predating this column is in, and the
+// zero Nickname is exactly how the Business layer spells it. A non-empty value
+// that will not parse is still an error, because it means something wrote a name
+// that bypassed nickname.Parse.
+func toBusNickname(s string) (nickname.Nickname, error) {
+	if s == "" {
+		return nickname.Nickname{}, nil
+	}
+
+	name, err := nickname.Parse(s)
+	if err != nil {
+		return nickname.Nickname{}, fmt.Errorf("nickname: %w", err)
+	}
+
+	return name, nil
 }
 
 func toBusLoginToken(r dbLoginToken) (identitybus.LoginToken, error) {

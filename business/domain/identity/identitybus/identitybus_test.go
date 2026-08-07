@@ -3,6 +3,7 @@ package identitybus_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/jroedel/uebung/business/domain/identity/identitybus"
 	"github.com/jroedel/uebung/business/domain/identity/stores/memdb"
 	"github.com/jroedel/uebung/business/types/email"
+	"github.com/jroedel/uebung/business/types/nickname"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/secret"
 )
@@ -44,10 +46,37 @@ func (m *captureMailer) lastToken(t *testing.T) string {
 	return tok
 }
 
+// stubNamer hands out names from a fixed sequence rather than at random, so a
+// test can arrange a collision exactly instead of hoping the real generator
+// produces one.
+//
+// Past the end of the sequence it falls back to a numbered name, which is what
+// the real generator does for the same reason: to keep producing fresh
+// candidates once the obvious ones are gone.
+type stubNamer struct {
+	names []string
+	fail  error
+	calls int
+}
+
+func (n *stubNamer) Generate(attempt int) (nickname.Nickname, error) {
+	n.calls++
+
+	if n.fail != nil {
+		return nickname.Nickname{}, n.fail
+	}
+	if attempt < len(n.names) {
+		return nickname.Parse(n.names[attempt])
+	}
+
+	return nickname.Parse("Blaue Eule " + strconv.Itoa(attempt))
+}
+
 type fixture struct {
 	bus    *identitybus.Business
 	store  *memdb.Store
 	mailer *captureMailer
+	namer  *stubNamer
 	clock  *time.Time
 }
 
@@ -55,12 +84,18 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	f := &fixture{store: memdb.New(), mailer: &captureMailer{}, clock: &now}
+	f := &fixture{
+		store:  memdb.New(),
+		mailer: &captureMailer{},
+		namer:  &stubNamer{names: []string{"Blaue Eule", "Dunkler Hund", "Leuchtendes Pferd"}},
+		clock:  &now,
+	}
 
 	var n int
 	bus, err := identitybus.NewBusiness(identitybus.Config{
 		Storer:   f.store,
 		Mailer:   f.mailer,
+		Namer:    f.namer,
 		LinkBase: "https://uebung.club/auth/callback",
 		Now:      func() time.Time { return *f.clock },
 		NewID: func() (userid.UserID, error) {
@@ -305,5 +340,249 @@ func TestUnverifiedAccountCannotAuthenticate(t *testing.T) {
 
 	if _, err := f.bus.Authenticate(t.Context(), raw); !errors.Is(err, identitybus.ErrInvalidCredential) {
 		t.Fatalf("unverified account authenticated: err = %v", err)
+	}
+}
+
+// --- nicknames --------------------------------------------------------------
+
+// userFor signs an address in and returns the account behind the session.
+func (f *fixture) userFor(t *testing.T, addr string) identitybus.User {
+	t.Helper()
+
+	user, err := f.bus.Authenticate(t.Context(), f.signIn(t, addr))
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	return user
+}
+
+func TestNewAccountHasNoNickname(t *testing.T) {
+	f := newFixture(t)
+
+	user := f.userFor(t, "learner@example.com")
+
+	if user.HasNickname() {
+		t.Errorf("a fresh account already has the nickname %q, want none", user.Nickname)
+	}
+	if !user.Nickname.IsZero() {
+		t.Errorf("a fresh account's nickname is %q, want the zero value", user.Nickname)
+	}
+}
+
+func TestSetNicknameSticks(t *testing.T) {
+	f := newFixture(t)
+
+	user := f.userFor(t, "learner@example.com")
+
+	updated, err := f.bus.SetNickname(t.Context(), user.ID, nickname.MustParse("Blaue Eule"))
+	if err != nil {
+		t.Fatalf("SetNickname: %v", err)
+	}
+	if updated.Nickname != nickname.MustParse("Blaue Eule") {
+		t.Errorf("SetNickname returned %q, want %q", updated.Nickname, "Blaue Eule")
+	}
+
+	// And it is readable on the next request, not just in the return value.
+	reloaded, found, err := f.store.UserByID(t.Context(), user.ID)
+	if err != nil || !found {
+		t.Fatalf("UserByID: found = %v, err = %v", found, err)
+	}
+	if reloaded.Nickname.String() != "Blaue Eule" {
+		t.Errorf("stored nickname is %q, want %q", reloaded.Nickname, "Blaue Eule")
+	}
+}
+
+func TestNicknameIsTakenAcrossCaseAndSeparators(t *testing.T) {
+	// Each of these is the same name as "Blaue Eule" to anyone reading a
+	// leaderboard, so each must be refused once the first is held.
+	variants := []string{"Blaue Eule", "blaue eule", "BLAUE EULE", "blaue-eule", "BlaueEule"}
+
+	for _, variant := range variants {
+		t.Run(variant, func(t *testing.T) {
+			f := newFixture(t)
+
+			first := f.userFor(t, "first@example.com")
+			second := f.userFor(t, "second@example.com")
+
+			if _, err := f.bus.SetNickname(t.Context(), first.ID, nickname.MustParse("Blaue Eule")); err != nil {
+				t.Fatalf("SetNickname for the first account: %v", err)
+			}
+
+			_, err := f.bus.SetNickname(t.Context(), second.ID, nickname.MustParse(variant))
+			if !errors.Is(err, identitybus.ErrNicknameTaken) {
+				t.Errorf("second account claiming %q: err = %v, want ErrNicknameTaken", variant, err)
+			}
+		})
+	}
+}
+
+// Re-spelling a name you already hold folds to the key your own row has. It must
+// not collide with itself.
+func TestRespellingYourOwnNicknameSucceeds(t *testing.T) {
+	f := newFixture(t)
+
+	user := f.userFor(t, "learner@example.com")
+
+	if _, err := f.bus.SetNickname(t.Context(), user.ID, nickname.MustParse("blaue eule")); err != nil {
+		t.Fatalf("SetNickname: %v", err)
+	}
+
+	updated, err := f.bus.SetNickname(t.Context(), user.ID, nickname.MustParse("Blaue Eule"))
+	if err != nil {
+		t.Fatalf("re-spelling an own nickname: %v", err)
+	}
+	if updated.Nickname.String() != "Blaue Eule" {
+		t.Errorf("nickname is %q after re-spelling, want %q", updated.Nickname, "Blaue Eule")
+	}
+}
+
+func TestRenameFreesThePreviousName(t *testing.T) {
+	f := newFixture(t)
+
+	first := f.userFor(t, "first@example.com")
+	second := f.userFor(t, "second@example.com")
+
+	if _, err := f.bus.SetNickname(t.Context(), first.ID, nickname.MustParse("Blaue Eule")); err != nil {
+		t.Fatalf("SetNickname: %v", err)
+	}
+	if _, err := f.bus.SetNickname(t.Context(), first.ID, nickname.MustParse("Dunkler Hund")); err != nil {
+		t.Fatalf("renaming: %v", err)
+	}
+
+	// The abandoned name is available again immediately.
+	if _, err := f.bus.SetNickname(t.Context(), second.ID, nickname.MustParse("Blaue Eule")); err != nil {
+		t.Errorf("claiming an abandoned name: %v", err)
+	}
+}
+
+// Signing in again runs SaveUser, which must leave the nickname alone. Getting
+// this wrong would wipe everyone's name on their next visit — silently, since
+// nothing else about sign-in would look different.
+func TestSigningInAgainKeepsTheNickname(t *testing.T) {
+	f := newFixture(t)
+
+	user := f.userFor(t, "learner@example.com")
+	if _, err := f.bus.SetNickname(t.Context(), user.ID, nickname.MustParse("Blaue Eule")); err != nil {
+		t.Fatalf("SetNickname: %v", err)
+	}
+
+	again := f.userFor(t, "learner@example.com")
+
+	if again.Nickname.String() != "Blaue Eule" {
+		t.Errorf("nickname is %q after signing in again, want %q", again.Nickname, "Blaue Eule")
+	}
+}
+
+func TestAssignNicknameGivesAGeneratedName(t *testing.T) {
+	f := newFixture(t)
+
+	user := f.userFor(t, "learner@example.com")
+
+	updated, err := f.bus.AssignNickname(t.Context(), user.ID)
+	if err != nil {
+		t.Fatalf("AssignNickname: %v", err)
+	}
+	if !updated.HasNickname() {
+		t.Fatal("AssignNickname left the account without a name")
+	}
+	if updated.Nickname.String() != "Blaue Eule" {
+		t.Errorf("assigned %q, want the namer's first offer %q", updated.Nickname, "Blaue Eule")
+	}
+}
+
+// The suggestion shown on the skip button is not reserved, so by the time it is
+// accepted somebody else may hold it. Losing that race must be silent: the
+// person asked not to think about this.
+func TestAssignNicknameRetriesPastATakenName(t *testing.T) {
+	f := newFixture(t)
+
+	first := f.userFor(t, "first@example.com")
+	second := f.userFor(t, "second@example.com")
+
+	// The first account takes what the namer offers first.
+	if _, err := f.bus.SetNickname(t.Context(), first.ID, nickname.MustParse("Blaue Eule")); err != nil {
+		t.Fatalf("SetNickname: %v", err)
+	}
+
+	updated, err := f.bus.AssignNickname(t.Context(), second.ID)
+	if err != nil {
+		t.Fatalf("AssignNickname: %v", err)
+	}
+	if updated.Nickname.String() != "Dunkler Hund" {
+		t.Errorf("assigned %q, want the namer's second offer %q", updated.Nickname, "Dunkler Hund")
+	}
+}
+
+func TestSuggestNicknameSkipsTakenNames(t *testing.T) {
+	f := newFixture(t)
+
+	holder := f.userFor(t, "holder@example.com")
+	if _, err := f.bus.SetNickname(t.Context(), holder.ID, nickname.MustParse("Blaue Eule")); err != nil {
+		t.Fatalf("SetNickname: %v", err)
+	}
+
+	suggestion, err := f.bus.SuggestNickname(t.Context())
+	if err != nil {
+		t.Fatalf("SuggestNickname: %v", err)
+	}
+	if suggestion.String() == "Blaue Eule" {
+		t.Error("SuggestNickname offered a name that is already taken")
+	}
+}
+
+// A suggestion is a proposal, not a reservation: asking twice in a row without
+// anyone accepting must not consume anything.
+func TestSuggestNicknameReservesNothing(t *testing.T) {
+	f := newFixture(t)
+
+	first, err := f.bus.SuggestNickname(t.Context())
+	if err != nil {
+		t.Fatalf("SuggestNickname: %v", err)
+	}
+
+	second, err := f.bus.SuggestNickname(t.Context())
+	if err != nil {
+		t.Fatalf("SuggestNickname: %v", err)
+	}
+
+	if first != second {
+		t.Errorf("consecutive suggestions differ (%q then %q), so the first was consumed", first, second)
+	}
+}
+
+func TestSetNicknameRejectsAnUnknownAccount(t *testing.T) {
+	f := newFixture(t)
+
+	stranger, err := userid.Parse("user-nobody")
+	if err != nil {
+		t.Fatalf("userid.Parse: %v", err)
+	}
+
+	if _, err := f.bus.SetNickname(t.Context(), stranger, nickname.MustParse("Blaue Eule")); !errors.Is(err, identitybus.ErrInvalidCredential) {
+		t.Errorf("SetNickname for an unknown account: err = %v, want ErrInvalidCredential", err)
+	}
+}
+
+func TestSetNicknameRejectsTheZeroValue(t *testing.T) {
+	f := newFixture(t)
+
+	user := f.userFor(t, "learner@example.com")
+
+	if _, err := f.bus.SetNickname(t.Context(), user.ID, nickname.Nickname{}); err == nil {
+		t.Error("SetNickname accepted the zero Nickname, which would clear the name")
+	}
+}
+
+// A namer that cannot produce a name is a startup-shaped problem, but it must
+// surface as an error rather than as an account silently left unnamed.
+func TestAssignNicknameReportsAGeneratorFailure(t *testing.T) {
+	f := newFixture(t)
+
+	user := f.userFor(t, "learner@example.com")
+	f.namer.fail = errors.New("word lists unavailable")
+
+	if _, err := f.bus.AssignNickname(t.Context(), user.ID); err == nil {
+		t.Error("AssignNickname succeeded despite the namer failing")
 	}
 }

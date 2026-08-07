@@ -53,6 +53,8 @@ POST /auth/request   {"email": "..."}   always 202, whatever the address
 GET  /auth/callback?token=...           303 to / with a session cookie
 POST /auth/logout                       destroys the session server-side
 GET  /auth/me                           who is signed in, or 401
+POST /auth/nickname  {"nickname":"..."} sets or changes the display name
+POST /auth/nickname/skip                accepts a generated one instead
 ```
 
 Some deliberate choices worth knowing before changing any of it:
@@ -81,6 +83,47 @@ Some deliberate choices worth knowing before changing any of it:
 Run it without a mail server: with no `-smtp-host`, the link is written to the
 log. `-single-user` skips sign-in entirely and makes every visitor the built-in
 local learner — **development only**, it makes every visitor the same person.
+
+### Nicknames
+
+The address is private; the nickname is the public name, and it exists because a
+leaderboard has to print something. Nothing derives one from the other — an
+account signing in as `firstname.lastname@work.example` should not find their
+full name at the top of a public list.
+
+A learner is asked once, after signing in, and can skip: skipping takes a
+generated German name — `Blaue Eule`, `Dunkler Hund` — from an adjective and a
+noun, with the adjective declined to agree with the noun's gender. The word
+lists live in `business/domain/identity/nicknamer` and are validated as they
+load; the package test walks all ~112,000 pairs and checks each is a name a
+person could have typed themselves.
+
+- **Uniqueness is decided on a folded form** — lowercased, `ß` expanded to `ss`,
+  spaces and hyphens dropped — so `Blaue Eule`, `blaue-eule` and `BlaueEule` are
+  one name. Two names a reader cannot tell apart in a column are a collision,
+  whatever the bytes say. Umlauts are deliberately *not* folded to base vowels:
+  `Grüne` and `Grune` are different German words.
+- **The character set is an allowlist**, not a filter: ASCII letters, German
+  umlauts and `ß`, digits, single spaces and hyphens. A leaderboard is exactly
+  where a homoglyph pays off — Cyrillic `а` renders identically to Latin `a` —
+  and an allowlist rules that out by construction rather than by a confusables
+  table someone has to keep current.
+- **A suggestion reserves nothing.** It is offered on the skip button and may be
+  taken before it is accepted, in which case the server quietly assigns a
+  different one. Holding a reservation would need its own expiry and its own
+  cleanup for no gain.
+- **Screening is whole-word**, against a reserved list (impersonation: `admin`,
+  `uebung`, `support`) and a profanity list. It will never be complete, and it
+  is tuned to avoid false positives rather than to maximise recall — `das Ass`
+  and `das Kraut` are ordinary German, and `Eule 88` is usually a birth year.
+- **Renaming frees the previous name immediately**, and is not rate-limited.
+  Both are worth revisiting once names are publicly visible and therefore
+  publicly worth squatting.
+
+The column is added to an existing `users` table by a guarded `ALTER TABLE` in
+the store's `Open`. Its unique index is **partial** — `WHERE nickname_fold <> ''`
+— because every pre-existing row has an empty fold and a plain unique index
+would find them all in conflict with one another.
 
 ### Cookies and the reverse proxy
 

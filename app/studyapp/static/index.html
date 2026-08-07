@@ -33,6 +33,11 @@
     <!-- Who is signed in, and a way out. Not cosmetic: without it, a session
          someone did not choose to start is invisible and unrecoverable. -->
     <p class="account" id="account" hidden>
+      <!-- The nickname is what other people will see, so it is what the header
+           shows; the address stays as the quieter reminder of which account
+           this is. -->
+      <span id="account-nickname"></span>
+      <button class="linkish" id="rename-btn" type="button" hidden>Change</button>
       <span id="account-email"></span>
       <button class="linkish" id="signout-btn" type="button">Sign out</button>
     </p>
@@ -69,6 +74,31 @@
                placeholder="you@example.com" aria-label="Email address" />
         <button class="primary" id="signin-btn" type="submit">Email me a link</button>
       </form>
+    </section>
+
+    <!-- Choose a display name. Shown after signing in when there is none yet,
+         and reachable later from "Change" in the header. -->
+    <section class="panel" id="nickname-panel" hidden>
+      <h2 id="nickname-title">Pick a nickname</h2>
+      <p id="nickname-body">
+        This is the name other learners will see on the leaderboard — so it need
+        not be your real one.
+      </p>
+      <form id="nickname-form" autocomplete="off">
+        <input class="field" id="nickname-input" type="text" name="nickname"
+               maxlength="24" required autocapitalize="words" autocomplete="off"
+               spellcheck="false" placeholder="Blaue Eule" aria-label="Nickname" />
+        <button class="primary" id="nickname-btn" type="submit">Save</button>
+      </form>
+      <p class="muted" id="nickname-skip-line" hidden>
+        Rather not choose?
+        <button class="linkish" id="nickname-skip-btn" type="button"></button>
+      </p>
+      <!-- Shown when changing an existing name, so the panel is never a dead
+           end you can only leave by saving. -->
+      <p class="muted" id="nickname-cancel-line" hidden>
+        <button class="linkish" id="nickname-cancel-btn" type="button">Cancel</button>
+      </p>
     </section>
 
     <!-- Loading / error states. -->
