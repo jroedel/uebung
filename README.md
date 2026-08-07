@@ -1,7 +1,8 @@
-# Übung
+# Übung Club
 
 A spaced-repetition trainer for German grammatical gender — **der / die / das** —
 drilled on the nouns that turn up most often in film and television subtitles.
+Runs at [uebung.club](https://uebung.club).
 
 Module 1 is the German gender deck: the ~200 highest-frequency subtitle nouns,
 each scheduled with **FSRS** (the Free Spaced Repetition Scheduler) so you review
@@ -52,6 +53,16 @@ the card's own article and lemma, so it can never disagree with the gender the
 deck teaches.
 
 `GET /api/summary?lang=de` reports deck size, nouns seen, and reviews due now.
+`GET /healthz` reports whether the app can serve: with a store check wired it
+touches the database, so a probe fails rather than returning 200 while every
+study request errors.
+
+### Installing it on a phone
+
+The client is a PWA — manifest, icons and `theme-color` are embedded in the
+binary like the rest of it — so a browser will offer to add it to the home
+screen, where it opens without browser chrome. Installability needs HTTPS, so it
+works from `uebung.club` but not from a plain-HTTP `localhost:8090` on a phone.
 
 ## Architecture
 

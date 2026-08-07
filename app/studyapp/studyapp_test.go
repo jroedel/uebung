@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,127 @@ func newServer(t *testing.T) http.Handler {
 		Now:        fixedNow,
 	})
 	return app.Handler()
+}
+
+// newServerWithStatic is newServer plus the embedded client, for the routes that
+// only exist when assets are served.
+func newServerWithStatic(t *testing.T) http.Handler {
+	t.Helper()
+
+	app := studyapp.New(studyapp.Config{
+		Vocab:  vocabbus.NewBusiness(seeddb.New()),
+		Study:  studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
+		Now:    fixedNow,
+		Static: studyapp.Assets(),
+	})
+
+	return app.Handler()
+}
+
+// healthServer builds an app whose health check returns whatever err is, so both
+// the healthy and the degraded path can be exercised.
+func healthServer(t *testing.T, err error) http.Handler {
+	t.Helper()
+
+	app := studyapp.New(studyapp.Config{
+		Vocab:  vocabbus.NewBusiness(seeddb.New()),
+		Study:  studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
+		Now:    fixedNow,
+		Health: func(context.Context) error { return err },
+	})
+
+	return app.Handler()
+}
+
+// A reverse proxy needs /healthz to mean "can serve", not "is listening". With no
+// check wired it reports process liveness; with one, a failing store must fail
+// the probe rather than returning 200 while every study request errors.
+func TestHealthz(t *testing.T) {
+	tests := map[string]struct {
+		h    http.Handler
+		want int
+	}{
+		"no check wired": {newServer(t), http.StatusOK},
+		"store healthy":  {healthServer(t, nil), http.StatusOK},
+		"store down":     {healthServer(t, errors.New("database is gone")), http.StatusServiceUnavailable},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			tc.h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.want, rec.Body)
+			}
+			// The failure detail belongs in the log, not in the response body.
+			if tc.want != http.StatusOK && strings.Contains(rec.Body.String(), "database is gone") {
+				t.Errorf("health failure leaked the underlying error: %s", rec.Body)
+			}
+		})
+	}
+}
+
+// The manifest has to arrive as application/manifest+json or the browser ignores
+// it and the install prompt never appears — a failure with no visible symptom in
+// the app itself, which is why it is pinned here.
+func TestManifestAndIconsAreServed(t *testing.T) {
+	h := newServerWithStatic(t)
+
+	t.Run("manifest", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/manifest+json") {
+			t.Fatalf("Content-Type = %q, want application/manifest+json", ct)
+		}
+
+		var m struct {
+			Name     string `json:"name"`
+			StartURL string `json:"start_url"`
+			Display  string `json:"display"`
+			Icons    []struct {
+				Src     string `json:"src"`
+				Sizes   string `json:"sizes"`
+				Purpose string `json:"purpose"`
+			} `json:"icons"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+			t.Fatalf("manifest is not valid JSON: %v", err)
+		}
+		if m.Name != "Übung Club" || m.StartURL != "/" || m.Display != "standalone" {
+			t.Errorf("manifest = %+v, want the installable Übung Club shape", m)
+		}
+		// Android crops icons; without a maskable one it crops the artwork.
+		var maskable bool
+		for _, i := range m.Icons {
+			if i.Purpose == "maskable" {
+				maskable = true
+			}
+		}
+		if !maskable {
+			t.Error("manifest declares no maskable icon")
+		}
+	})
+
+	// Every icon the manifest names must actually exist, or the install silently
+	// falls back to a screenshot of the page.
+	for _, name := range []string{"icon-192.png", "icon-512.png", "icon-maskable-512.png"} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/"+name, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "image/png") {
+				t.Fatalf("Content-Type = %q, want image/png", ct)
+			}
+		})
+	}
 }
 
 func TestBatchReturnsPreloadedCardsWithAnswers(t *testing.T) {
