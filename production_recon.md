@@ -94,8 +94,15 @@ This distinction cost real time to work out and is worth keeping:
   configured and the app is not running.
 
 - **403 on paths that do not exist** — not a missing file (that is 404) but a
-  directory Apache cannot walk. In practice: a permission problem on the docroot
-  or one of its parents.
+  permission problem. Two different causes produce it, and the status code alone
+  cannot tell them apart. **Read the response body**, which names the cause:
+  - `"You don't have permission to access this resource."` alone — Apache cannot
+    traverse or read the document root or one of its parents (see the 711 note
+    above).
+  - `"Server unable to read htaccess file, denying access to be safe"` — the
+    document root is *correct* and `.htaccess` is there, but not readable by
+    Apache. It needs mode 644. `mktemp` produces 600 and `scp` carries the source
+    mode, which is how this happened here.
 
 `tmpcontrol.online` returns a blanket 503; `uebung.club` returned 403 before
 deployment, and 403 again afterwards when the app directory was mode 700.
@@ -214,6 +221,10 @@ Each of these was a real bug or a real wasted hour:
 - **A child inheriting stdin keeps an `ssh` channel open.** Without `</dev/null`
   the invoking `ssh` waits for EOF and never returns, hanging a deploy right after
   it starts the app.
+- **`mktemp` creates files mode 600, and `scp` carries the source mode.** Any file
+  pushed from a temporary file arrives unreadable by anyone but the account —
+  which for `.htaccess` means Apache refuses every request. `chmod` before *and*
+  after the push; whether scp propagates the mode is implementation-dependent.
 - **A health check against the public URL cannot tell a bad binary from a
   misconfigured proxy.** The first real deploy rolled back a perfectly good
   release because Apache was answering 403 while the app was listening happily on
