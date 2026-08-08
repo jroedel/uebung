@@ -62,3 +62,73 @@ type summaryResponse struct {
 	Learned  int    `json:"learned"`
 	DueNow   int    `json:"due_now"`
 }
+
+// catalogResponse is the shelf: every deck in a language, in course order, each
+// carrying the learner's standing in it.
+type catalogResponse struct {
+	Lang  string         `json:"lang"`
+	Decks []deckResponse `json:"decks"`
+}
+
+// deckResponse is one deck on the shelf.
+//
+// It carries the whole introduction rather than a link to it. The intro is a
+// couple of kilobytes of authored text that never changes for a given build, and
+// the client needs it at two different moments — before a learner's first session,
+// and again whenever they choose to reread it. Shipping it with the catalog makes
+// both instant and costs one request instead of two.
+//
+// Playability is deliberately not a field here. Whether a deck can be rendered is
+// a fact about the client, not about the deck: a browser that has not learned a
+// drill yet decides that from Drill, and a client that has will not need to be
+// told. Sending a "playable" flag would put the client's own capabilities in the
+// server's mouth and go stale the moment either side shipped without the other.
+type deckResponse struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Subtitle string   `json:"subtitle"`
+	Drill    string   `json:"drill"`
+	Answers  []string `json:"answers"`
+
+	DeckSize int `json:"deck_size"` // items in the deck.
+	Learned  int `json:"learned"`   // items answered at least once.
+	DueNow   int `json:"due_now"`   // items due for review right now.
+
+	// Unlocked is whether the learner may open the deck. Requires* say what it is
+	// waiting for when they may not: which deck gates it, under what title, and
+	// the progress through that deck as a have/need pair so the client can show a
+	// bar rather than a closed door. Requires is empty and the numbers are 0 when
+	// nothing gates the deck.
+	Unlocked      bool   `json:"unlocked"`
+	Requires      string `json:"requires"`
+	RequiresTitle string `json:"requires_title"`
+	RequiresSeen  int    `json:"requires_seen"`
+	RequiresNeed  int    `json:"requires_need"`
+
+	// IntroSeen is how the client decides whether to show the introduction
+	// unprompted. It is derived from whether the learner has any progress in the
+	// deck rather than stored: opening a deck and studying it are the same act,
+	// and a learner who backed out of the intro without answering anything is
+	// someone who should be shown it again.
+	IntroSeen bool `json:"intro_seen"`
+
+	Intro introResponse `json:"intro"`
+}
+
+// introResponse is the authored explanation shown before a deck's first session.
+type introResponse struct {
+	Heading string               `json:"heading"`
+	Body    []string             `json:"body"`
+	Groups  []introGroupResponse `json:"groups"`
+	Closing string               `json:"closing"`
+}
+
+// introGroupResponse is one block of the explanation. Answer names one of the
+// deck's Answers, or is empty, so the client can colour a block to match the
+// button it leads to.
+type introGroupResponse struct {
+	Answer  string `json:"answer"`
+	Label   string `json:"label"`
+	Members string `json:"members"`
+	Hook    string `json:"hook"`
+}

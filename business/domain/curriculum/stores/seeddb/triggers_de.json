@@ -18,19 +18,19 @@
         ],
         "groups": [
           {
-            "case": "akkusativ",
+            "answer": "akkusativ",
             "label": "Accusative -- only 6 worth learning",
             "members": "für, um, durch, gegen, ohne, bis",
             "hook": "The first five spell FUDGO: Für, Um, Durch, Gegen, Ohne. Learn those five as a block and you have the accusative group as you will meet it. A few others exist -- \"wider\", and \"entlang\" when it follows its noun -- but they are rare enough to leave for later."
           },
           {
-            "case": "dativ",
+            "answer": "dativ",
             "label": "Dative -- the big group",
             "members": "aus, außer, bei, mit, nach, seit, von, zu, gegenüber, ab",
             "hook": "The first eight are traditionally chanted in one breath: aus-außer-bei-mit-nach-seit-von-zu. If you learn one list in this deck, learn that one."
           },
           {
-            "case": "genitiv",
+            "answer": "genitiv",
             "label": "Genitive -- rare in speech",
             "members": "wegen, trotz, während, statt, außerhalb, innerhalb",
             "hook": "In everyday speech the first four are very often heard with the dative instead -- \"wegen dem Wetter\". That is not an error you need to copy, but it is why you will hear something different from what this deck teaches. Written German wants the genitive."
@@ -240,19 +240,19 @@
         ],
         "groups": [
           {
-            "case": "dativ",
+            "answer": "dativ",
             "label": "Dative -- the ones worth knowing first",
             "members": "helfen, danken, gehören, folgen, antworten, passen, gratulieren, vertrauen, zuhören, begegnen",
             "hook": "Several describe doing something *to or for* a person rather than *acting on* them -- helping, thanking, answering, congratulating. That is a hint, not a rule: it explains the group after you know it, but it will not reliably predict a verb you have not met."
           },
           {
-            "case": "dativ",
+            "answer": "dativ",
             "label": "Dative -- the ones where the sentence turns around",
             "members": "gefallen, fehlen, einfallen, auffallen, passieren, wehtun, leidtun, schmecken",
             "hook": "In English *you* like the book; in German the book does the pleasing and you are in the dative -- \"Das Buch gefällt mir\". The same shape covers missing something, a name coming back to you, noticing something and being in pain. Once you see the pattern these stop being separate facts."
           },
           {
-            "case": "akkusativ",
+            "answer": "akkusativ",
             "label": "Accusative -- the traps",
             "members": "anrufen, fragen, treffen, unterstützen, stören, mögen, bitten, verstehen",
             "hook": "Most of these have a near-twin in the dative lists, and the twin takes the other case: unterstützen against helfen, fragen against antworten, treffen against begegnen, mögen against gefallen. Where the meanings are closest the cases diverge, which is exactly why they are worth drilling together. \"anrufen\" is here for a different reason -- it is simply the single most mis-cased verb learners produce."

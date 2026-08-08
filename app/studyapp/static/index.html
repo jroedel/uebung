@@ -24,7 +24,7 @@
 <body>
   <header class="topbar">
     <h1>Übung Club</h1>
-    <p class="subtitle">der · die · das — subtitle nouns</p>
+    <p class="subtitle">Spaced-repetition decks for German grammar</p>
     <div class="stats" id="stats" hidden>
       <span id="stat-remaining">–</span> left ·
       <span id="stat-learned">–</span>/<span id="stat-deck">–</span> learned ·
@@ -41,13 +41,25 @@
       <span id="account-email"></span>
       <button class="linkish" id="signout-btn" type="button">Sign out</button>
     </p>
+    <!-- Which deck is open, and the way back to the shelf. Shown only while a
+         deck is being studied; on the shelf itself it would be a link to where
+         you already are. -->
+    <p class="deck-line" id="deck-line" hidden>
+      <button class="linkish" id="decks-btn" type="button">← All decks</button>
+      <span id="deck-title"></span>
+      <button class="linkish" id="reread-btn" type="button">How this deck works</button>
+    </p>
   </header>
 
   <main class="stage" id="stage">
-    <!-- Drop-zone hints framing the card. -->
-    <div class="hint hint-left"  data-article="der">der</div>
-    <div class="hint hint-up"    data-article="das">das</div>
-    <div class="hint hint-right" data-article="die">die</div>
+    <!-- Drop-zone hints framing the card. Grouped so they can be hidden as one
+         while a panel is up: they are positioned around the card and would
+         otherwise frame the deck picker as though it were answerable. -->
+    <div id="hints" hidden>
+      <div class="hint hint-left"  data-article="der">der</div>
+      <div class="hint hint-up"    data-article="das">das</div>
+      <div class="hint hint-right" data-article="die">die</div>
+    </div>
 
     <!-- The live card stack is injected here. -->
     <div class="deck" id="deck" aria-live="polite"></div>
@@ -62,6 +74,30 @@
         <ul class="miss-list" id="miss-list"></ul>
       </div>
       <button class="primary" id="again-btn">Next batch</button>
+      <p class="muted">
+        <button class="linkish" id="panel-decks-btn" type="button">Back to all decks</button>
+      </p>
+    </section>
+
+    <!-- The shelf: every deck in the course, in order, with the ones still to
+         come visible rather than hidden. Seeing what is ahead is most of what
+         makes finishing the deck in front of you worth doing. -->
+    <section class="panel decks-panel" id="decks-panel" hidden>
+      <h2>Your decks</h2>
+      <ul class="deck-list" id="deck-list"></ul>
+    </section>
+
+    <!-- A deck's introduction: the pattern behind the material, shown before the
+         first session and reachable afterwards from the header. -->
+    <section class="panel intro-panel" id="intro-panel" hidden>
+      <h2 id="intro-heading"></h2>
+      <div class="intro-body" id="intro-body"></div>
+      <ul class="intro-groups" id="intro-groups"></ul>
+      <p class="intro-closing" id="intro-closing"></p>
+      <button class="primary" id="intro-start-btn">Start studying</button>
+      <p class="muted">
+        <button class="linkish" id="intro-back-btn" type="button">Back to all decks</button>
+      </p>
     </section>
 
     <!-- Sign-in. Shown when /auth/me says nobody is signed in. -->
@@ -113,7 +149,7 @@
     <button class="choice die" data-article="die">die<small>swipe right ▶</small></button>
   </nav>
 
-  <footer class="footer">
+  <footer class="footer" id="footer" hidden>
     <p>Swipe or use ← ↑ → keys. Green = right, red = wrong. Progress saves automatically.</p>
   </footer>
 

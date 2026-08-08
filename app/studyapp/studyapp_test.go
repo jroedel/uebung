@@ -12,15 +12,36 @@ import (
 	"time"
 
 	"github.com/jroedel/uebung/app/studyapp"
+	"github.com/jroedel/uebung/business/domain/curriculum/curriculumbus"
+	curriculumseed "github.com/jroedel/uebung/business/domain/curriculum/stores/seeddb"
 	"github.com/jroedel/uebung/business/domain/study/stores/memdb"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
 	"github.com/jroedel/uebung/business/domain/vocab/stores/seeddb"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
+	"github.com/jroedel/uebung/business/types/deckid"
+	"github.com/jroedel/uebung/business/types/langcode"
+	"github.com/jroedel/uebung/business/types/rating"
+	"github.com/jroedel/uebung/business/types/roleanswer"
+	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/fsrs"
 )
 
 // fixedNow pins the app's clock so scheduling is deterministic in tests.
 func fixedNow() time.Time { return time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC) }
+
+// newCurriculum builds the real catalog over the embedded files. Tests use the
+// authored course rather than a stub on purpose: the shelf a learner sees is
+// authored data, and a stub would pass while the files that ship were broken.
+func newCurriculum(t *testing.T) *curriculumbus.Business {
+	t.Helper()
+
+	c, err := curriculumbus.NewBusiness(curriculumseed.New(), curriculumbus.Config{})
+	if err != nil {
+		t.Fatalf("curriculum: %v", err)
+	}
+
+	return c
+}
 
 func newServer(t *testing.T) http.Handler {
 	t.Helper()
@@ -29,6 +50,7 @@ func newServer(t *testing.T) http.Handler {
 	app := studyapp.New(studyapp.Config{
 		Vocab:      vocab,
 		Study:      study,
+		Curriculum: newCurriculum(t),
 		BatchLimit: 5,
 		Now:        fixedNow,
 		Auth:       studyapp.SingleUser{},
@@ -42,11 +64,12 @@ func newServerWithStatic(t *testing.T) http.Handler {
 	t.Helper()
 
 	app := studyapp.New(studyapp.Config{
-		Vocab:  vocabbus.NewBusiness(seeddb.New()),
-		Study:  studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
-		Now:    fixedNow,
-		Auth:   studyapp.SingleUser{},
-		Static: studyapp.Assets(),
+		Vocab:      vocabbus.NewBusiness(seeddb.New()),
+		Study:      studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
+		Curriculum: newCurriculum(t),
+		Now:        fixedNow,
+		Auth:       studyapp.SingleUser{},
+		Static:     studyapp.Assets(),
 	})
 
 	return app.Handler()
@@ -179,6 +202,259 @@ func TestIndexHTMLIsServedNotRedirected(t *testing.T) {
 				t.Errorf("%s did not serve the client HTML", path)
 			}
 		})
+	}
+}
+
+// deckEntry mirrors one entry of the catalog response. It is spelled out here
+// rather than shared with the app package on purpose: this is the wire contract a
+// browser depends on, and a test that reused the server's own struct would keep
+// passing through a rename that broke every client.
+type deckEntry struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Subtitle string   `json:"subtitle"`
+	Drill    string   `json:"drill"`
+	Answers  []string `json:"answers"`
+
+	DeckSize int `json:"deck_size"`
+	Learned  int `json:"learned"`
+	DueNow   int `json:"due_now"`
+
+	Unlocked      bool   `json:"unlocked"`
+	Requires      string `json:"requires"`
+	RequiresTitle string `json:"requires_title"`
+	RequiresSeen  int    `json:"requires_seen"`
+	RequiresNeed  int    `json:"requires_need"`
+
+	IntroSeen bool `json:"intro_seen"`
+
+	Intro struct {
+		Heading string   `json:"heading"`
+		Body    []string `json:"body"`
+		Groups  []struct {
+			Answer  string `json:"answer"`
+			Label   string `json:"label"`
+			Members string `json:"members"`
+			Hook    string `json:"hook"`
+		} `json:"groups"`
+		Closing string `json:"closing"`
+	} `json:"intro"`
+}
+
+func getDecks(t *testing.T, h http.Handler) []deckEntry {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/decks?lang=de", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	var body struct {
+		Lang  string      `json:"lang"`
+		Decks []deckEntry `json:"decks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding catalog: %v", err)
+	}
+
+	if body.Lang != "de" {
+		t.Fatalf("lang = %q, want de", body.Lang)
+	}
+
+	return body.Decks
+}
+
+// The catalog is what the picker is built from, so everything a deck card needs
+// has to arrive in one response — including the introduction, which is wanted
+// before the first session and again whenever it is reread.
+func TestDecksListsTheCourse(t *testing.T) {
+	decks := getDecks(t, newServer(t))
+
+	if len(decks) < 2 {
+		t.Fatalf("catalog holds %d deck(s), want the whole course", len(decks))
+	}
+
+	if decks[0].ID != "der-die-das" {
+		t.Fatalf("first deck is %q, want der-die-das", decks[0].ID)
+	}
+
+	for _, d := range decks {
+		if d.Title == "" || d.Subtitle == "" || d.Drill == "" {
+			t.Errorf("deck %q is missing shelf text: %+v", d.ID, d)
+		}
+		if len(d.Answers) < 2 {
+			t.Errorf("deck %q offers %d answer(s)", d.ID, len(d.Answers))
+		}
+		// A deck of size 0 renders as a progress bar over nothing and would make
+		// the gate behind it open at once.
+		if d.DeckSize == 0 {
+			t.Errorf("deck %q reports no items", d.ID)
+		}
+		if d.Intro.Heading == "" || len(d.Intro.Body) == 0 || d.Intro.Closing == "" {
+			t.Errorf("deck %q arrived without its introduction", d.ID)
+		}
+	}
+}
+
+// The noun deck's items live in the vocab domain, not in the catalog, so its size
+// is the one the App has to go and fetch. Getting this wrong is invisible in the
+// catalog itself and shows up only here.
+func TestDecksSizesTheNounDeckFromVocab(t *testing.T) {
+	decks := getDecks(t, newServer(t))
+
+	nouns, err := vocabbus.NewBusiness(seeddb.New()).Deck(context.Background(), langcode.German)
+	if err != nil {
+		t.Fatalf("loading the noun deck: %v", err)
+	}
+
+	if decks[0].DeckSize != len(nouns) {
+		t.Errorf("der-die-das reports %d items, want %d from the vocab deck", decks[0].DeckSize, len(nouns))
+	}
+}
+
+// A learner who has done nothing sees exactly one open deck, and the ones behind
+// it say what they are waiting for rather than simply being shut.
+func TestDecksLockWhatComesNext(t *testing.T) {
+	decks := getDecks(t, newServer(t))
+
+	if !decks[0].Unlocked {
+		t.Error("the first deck is locked; nothing gates it")
+	}
+	if decks[0].Requires != "" {
+		t.Errorf("the first deck requires %q; nothing may gate it", decks[0].Requires)
+	}
+	if decks[0].IntroSeen {
+		t.Error("a learner with no progress is treated as having seen the intro")
+	}
+
+	for _, d := range decks[1:] {
+		if d.Unlocked {
+			t.Errorf("deck %q is open to a learner who has studied nothing", d.ID)
+		}
+		if d.Requires == "" {
+			t.Errorf("deck %q is locked but names no prerequisite", d.ID)
+		}
+		// Without the title the client can only say "locked", which tells a learner
+		// nothing about what to go and do.
+		if d.RequiresTitle == "" {
+			t.Errorf("deck %q names prerequisite %q with no title", d.ID, d.Requires)
+		}
+		if d.RequiresNeed <= 0 {
+			t.Errorf("deck %q needs %d items of %q, which cannot be right",
+				d.ID, d.RequiresNeed, d.Requires)
+		}
+		if d.RequiresSeen != 0 {
+			t.Errorf("deck %q reports %d items seen in %q for a learner with no progress",
+				d.ID, d.RequiresSeen, d.Requires)
+		}
+	}
+}
+
+// Studying moves the numbers the picker draws its bars from, and it is what turns
+// the introduction from something shown unprompted into something offered.
+func TestDecksTrackProgressInTheDeckStudied(t *testing.T) {
+	h := newServer(t)
+
+	before := getDecks(t, h)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/grade",
+		bytes.NewReader([]byte(`{"lang":"de","results":[{"lemma":"Mann","rating":"good"},{"lemma":"Frau","rating":"again"}]}`))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grade status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	after := getDecks(t, h)
+
+	if after[0].Learned != 2 {
+		t.Errorf("der-die-das reports %d learned after two graded cards, want 2", after[0].Learned)
+	}
+	if !after[0].IntroSeen {
+		t.Error("the intro is still unseen after studying the deck")
+	}
+	if before[0].IntroSeen {
+		t.Error("the intro was already seen before anything was studied")
+	}
+
+	// The other decks must not have moved: grading in one deck is not progress in
+	// another, which is the whole reason study records grew a deck column.
+	for _, d := range after[1:] {
+		if d.Learned != 0 {
+			t.Errorf("deck %q reports %d learned after studying der-die-das", d.ID, d.Learned)
+		}
+
+		// Each deck watches its own prerequisite and nothing else. Only the one
+		// immediately behind der-die-das should have seen those two cards; a deck
+		// further down the chain is watching a deck that was not touched, and its
+		// bar must stay at zero rather than inheriting progress from up the chain.
+		want := 0
+		if d.Requires == "der-die-das" {
+			want = 2
+		}
+
+		if d.RequiresSeen != want {
+			t.Errorf("deck %q reports %d seen in prerequisite %q, want %d",
+				d.ID, d.RequiresSeen, d.Requires, want)
+		}
+	}
+}
+
+// The gate has to actually open, and the number it opens at has to be the one the
+// locked card was promising all along.
+func TestDecksUnlockOnceThePrerequisiteIsCovered(t *testing.T) {
+	study := studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()})
+	app := studyapp.New(studyapp.Config{
+		Vocab:      vocabbus.NewBusiness(seeddb.New()),
+		Study:      study,
+		Curriculum: newCurriculum(t),
+		BatchLimit: 5,
+		Now:        fixedNow,
+		Auth:       studyapp.SingleUser{},
+	})
+	h := app.Handler()
+
+	locked := getDecks(t, h)[1]
+	if locked.Unlocked {
+		t.Fatal("the second deck starts unlocked")
+	}
+
+	// Study exactly as much of the noun deck as the locked card said was needed,
+	// straight through the Business port — the point is the gate, not the HTTP.
+	nouns, err := vocabbus.NewBusiness(seeddb.New()).Deck(context.Background(), langcode.German)
+	if err != nil {
+		t.Fatalf("loading the noun deck: %v", err)
+	}
+
+	for i := range locked.RequiresNeed {
+		if _, err := study.Grade(context.Background(), userid.Local(), langcode.German,
+			deckid.DerDieDas, nouns[i].Lemma, rating.Good, roleanswer.None, fixedNow()); err != nil {
+			t.Fatalf("grading %q: %v", nouns[i].Lemma, err)
+		}
+	}
+
+	after := getDecks(t, h)[1]
+	if !after.Unlocked {
+		t.Fatalf("deck %q is still locked after %d of %d items seen",
+			after.ID, after.RequiresSeen, after.RequiresNeed)
+	}
+	if after.RequiresSeen != locked.RequiresNeed {
+		t.Errorf("RequiresSeen = %d, want %d", after.RequiresSeen, locked.RequiresNeed)
+	}
+
+	// One deck at a time: covering the first must not open the third.
+	if third := getDecks(t, h)[2]; third.Unlocked {
+		t.Errorf("deck %q opened as well; only the deck behind der-die-das should have", third.ID)
+	}
+}
+
+func TestDecksRejectsBadLanguage(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newServer(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/decks?lang=XYZ", nil))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
 
@@ -355,9 +631,10 @@ func TestServesEmbeddedClientWhenConfigured(t *testing.T) {
 // mistake that would otherwise ship a public, world-writable deck.
 func TestStudyRoutesRequireASignedInLearner(t *testing.T) {
 	app := studyapp.New(studyapp.Config{
-		Vocab: vocabbus.NewBusiness(seeddb.New()),
-		Study: studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
-		Now:   fixedNow,
+		Vocab:      vocabbus.NewBusiness(seeddb.New()),
+		Study:      studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
+		Curriculum: newCurriculum(t),
+		Now:        fixedNow,
 		// Auth deliberately omitted.
 	})
 	h := app.Handler()
@@ -365,6 +642,9 @@ func TestStudyRoutesRequireASignedInLearner(t *testing.T) {
 	tests := []struct {
 		method, path, body string
 	}{
+		// The catalog is per-learner — it reports progress and what is unlocked —
+		// so it is a study route and not public.
+		{http.MethodGet, "/api/decks?lang=de", ""},
 		{http.MethodGet, "/api/batch?lang=de", ""},
 		{http.MethodGet, "/api/summary?lang=de", ""},
 		{http.MethodPost, "/api/grade", `{"lang":"de","results":[{"lemma":"Mann","rating":"good"}]}`},

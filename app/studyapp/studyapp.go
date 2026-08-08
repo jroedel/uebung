@@ -12,11 +12,13 @@ package studyapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/jroedel/uebung/business/domain/curriculum/curriculumbus"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
 	"github.com/jroedel/uebung/business/types/deckid"
@@ -35,10 +37,11 @@ import (
 // exactly as it was. Adding a deck parameter later is a change to this file.
 var nounDeck = deckid.DerDieDas
 
-// Config wires an App together from its two Business domains and its policy.
+// Config wires an App together from its Business domains and its policy.
 type Config struct {
 	Vocab      *vocabbus.Business
 	Study      *studybus.Business
+	Curriculum *curriculumbus.Business
 	BatchLimit int              // cards per preloaded batch; defaults to 20.
 	Now        func() time.Time // clock seam; defaults to time.Now.
 	Static     fs.FS            // embedded browser client; nil serves API only.
@@ -66,6 +69,7 @@ type Config struct {
 type App struct {
 	vocab      *vocabbus.Business
 	study      *studybus.Business
+	curriculum *curriculumbus.Business
 	batchLimit int
 	now        func() time.Time
 	static     fs.FS
@@ -107,6 +111,7 @@ func New(cfg Config) *App {
 	return &App{
 		vocab:      cfg.Vocab,
 		study:      cfg.Study,
+		curriculum: cfg.Curriculum,
 		batchLimit: limit,
 		now:        now,
 		static:     cfg.Static,
@@ -120,6 +125,7 @@ func New(cfg Config) *App {
 // a static filesystem was provided, the browser client at the root.
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/decks", a.handleDecks)
 	mux.HandleFunc("GET /api/batch", a.handleBatch)
 	mux.HandleFunc("POST /api/grade", a.handleGrade)
 	mux.HandleFunc("GET /api/summary", a.handleSummary)
@@ -211,6 +217,119 @@ func (a *App) requireUser(w http.ResponseWriter, r *http.Request) (userid.UserID
 	}
 
 	return user, true
+}
+
+// handleDecks answers with the whole shelf: every deck in the language's course,
+// in order, each with the learner's standing in it and whether it is open yet.
+//
+// This is the one endpoint that composes all three domains — the catalog says
+// what exists and what gates what, vocab sizes the deck whose items it owns, and
+// study says how far the learner has got in each. It is also read-only: unlocking
+// a deck is a fact derived here on every request, never a row someone writes, so
+// there is no state to get out of step with the course.
+func (a *App) handleDecks(w http.ResponseWriter, r *http.Request) {
+	lang, err := toBusLang(r.URL.Query().Get("lang"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	ctx := r.Context()
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	// An App built without a curriculum has no shelf to show. Answering 500 rather
+	// than dereferencing keeps a wiring mistake a legible error in the log instead
+	// of a stack trace and a dropped connection. It sits after the authorisation
+	// check so a signed-out visitor is still told they are signed out.
+	if a.curriculum == nil {
+		writeServerError(w, errors.New("studyapp: no curriculum wired"))
+		return
+	}
+
+	decks, err := a.curriculum.Catalog(ctx, lang)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+
+	now := a.now()
+
+	// Two passes. The first collects each deck's own numbers; the second turns
+	// them into gates, which it can only do once every deck's coverage is known —
+	// a deck's gate is a statement about a *different* deck's progress. The
+	// catalog guarantees a prerequisite appears earlier, so one pass would in fact
+	// suffice today, but relying on that would make the ordering rule load-bearing
+	// in two places instead of one.
+	type standing struct {
+		size     int
+		learned  int
+		dueNow   int
+		coverage curriculumbus.Coverage
+	}
+
+	standings := make(map[deckid.DeckID]standing, len(decks))
+	titles := make(map[deckid.DeckID]string, len(decks))
+
+	for _, d := range decks {
+		size, err := a.deckSize(ctx, d)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+
+		progress, err := a.study.Progress(ctx, user, lang, d.ID)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+
+		dueNow := 0
+		for _, p := range progress {
+			if !p.IsNew() && !p.Due.After(now) {
+				dueNow++
+			}
+		}
+
+		standings[d.ID] = standing{
+			size:     size,
+			learned:  len(progress),
+			dueNow:   dueNow,
+			coverage: curriculumbus.Coverage{Size: size, Seen: len(progress)},
+		}
+		titles[d.ID] = d.Title
+	}
+
+	out := make([]deckResponse, 0, len(decks))
+	for _, d := range decks {
+		s := standings[d.ID]
+		gate := a.curriculum.Gate(d, standings[d.Prerequisite].coverage)
+		out = append(out, fromBusDeckResponse(d, gate, titles[d.Prerequisite], s.size, s.learned, s.dueNow))
+	}
+
+	writeJSON(w, http.StatusOK, catalogResponse{Lang: lang.String(), Decks: out})
+}
+
+// deckSize reports how many items a deck holds.
+//
+// The catalog carries the items of the decks it was written alongside and counts
+// them itself; the noun deck's items predate the catalog and still live in the
+// vocab domain, so its entry reports 0 and the count comes from there. This is
+// the one place that knows which source answers for which deck, which is exactly
+// the composing layer's job — no Business package has to learn about the other.
+func (a *App) deckSize(ctx context.Context, d curriculumbus.Deck) (int, error) {
+	if d.Size > 0 {
+		return d.Size, nil
+	}
+
+	nouns, err := a.vocab.Deck(ctx, d.Lang)
+	if err != nil {
+		return 0, err
+	}
+
+	return len(nouns), nil
 }
 
 // handleBatch preloads a study session: the ordered, ready-to-swipe cards for a
