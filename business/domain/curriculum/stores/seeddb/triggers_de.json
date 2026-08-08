@@ -1,0 +1,525 @@
+{
+  "language": "de",
+  "description": "Case-governing triggers: words that demand a case of the noun phrase that follows them. Two decks, both drilled the same way -- the learner sees the trigger and answers which case it takes. Two-way (Wechsel) prepositions are deliberately absent: their case depends on motion, so they have no answer without a sentence, and they belong in their own deck with a Wo?/Wohin? judgement. Selection favours what turns up in speech over what is formally complete, matching the noun deck's subtitle-frequency philosophy. Genders and case marking hand-written; a native review is genuinely wanted.",
+  "decks": [
+    {
+      "id": "de-praepositionen",
+      "title": "Prepositions: which case?",
+      "subtitle": "The 22 prepositions with one fixed case to learn",
+      "drill": "case-3way",
+      "prerequisite": "der-die-das",
+      "answers": ["akkusativ", "dativ", "genitiv"],
+      "intro": {
+        "heading": "The preposition decides, not you",
+        "body": [
+          "A German case is usually chosen by what a noun is *doing* -- the doer is nominative, the done-to is accusative. Prepositions break that rule, and this is the single most useful thing to know about them: a preposition simply demands a case, and the meaning of the sentence has no say in it.",
+          "\"mit\" takes dative. Always. Not because anything about the sentence is dative-ish, but because \"mit\" demands it. So the work is not reasoning -- it is knowing which of three groups a preposition is in.",
+          "There are three groups, and in everyday speech they are very unequal: dative is the one you meet constantly, and dative is what to guess when you are stuck. (There are in fact dozens of genitive prepositions, but nearly all of them belong to written and official German -- you will read them long before you ever say one.)"
+        ],
+        "groups": [
+          {
+            "case": "akkusativ",
+            "label": "Accusative -- only 6 worth learning",
+            "members": "für, um, durch, gegen, ohne, bis",
+            "hook": "The first five spell FUDGO: Für, Um, Durch, Gegen, Ohne. Learn those five as a block and you have the accusative group as you will meet it. A few others exist -- \"wider\", and \"entlang\" when it follows its noun -- but they are rare enough to leave for later."
+          },
+          {
+            "case": "dativ",
+            "label": "Dative -- the big group",
+            "members": "aus, außer, bei, mit, nach, seit, von, zu, gegenüber, ab",
+            "hook": "The first eight are traditionally chanted in one breath: aus-außer-bei-mit-nach-seit-von-zu. If you learn one list in this deck, learn that one."
+          },
+          {
+            "case": "genitiv",
+            "label": "Genitive -- rare in speech",
+            "members": "wegen, trotz, während, statt, außerhalb, innerhalb",
+            "hook": "In everyday speech the first four are very often heard with the dative instead -- \"wegen dem Wetter\". That is not an error you need to copy, but it is why you will hear something different from what this deck teaches. Written German wants the genitive."
+          }
+        ],
+        "closing": "You are not being asked to decline anything yet -- only to say which case the word demands. Producing the ending comes next."
+      },
+      "items": [
+        {
+          "trigger": "durch",
+          "case": "akkusativ",
+          "gloss": "through",
+          "phrase": "durch den Park",
+          "example": "Wir gehen durch den Park.",
+          "example_en": "We're walking through the park."
+        },
+        {
+          "trigger": "für",
+          "case": "akkusativ",
+          "gloss": "for",
+          "phrase": "für meinen Bruder",
+          "example": "Das Geschenk ist für meinen Bruder.",
+          "example_en": "The present is for my brother."
+        },
+        {
+          "trigger": "gegen",
+          "case": "akkusativ",
+          "gloss": "against; into",
+          "phrase": "gegen einen Baum",
+          "example": "Das Auto fuhr gegen einen Baum.",
+          "example_en": "The car drove into a tree."
+        },
+        {
+          "trigger": "ohne",
+          "case": "akkusativ",
+          "gloss": "without",
+          "phrase": "ohne seinen Schlüssel",
+          "example": "Er kam ohne seinen Schlüssel.",
+          "example_en": "He came without his key."
+        },
+        {
+          "trigger": "um",
+          "case": "akkusativ",
+          "gloss": "around; at (a time)",
+          "phrase": "um den Tisch",
+          "example": "Wir sitzen um den Tisch.",
+          "example_en": "We're sitting around the table."
+        },
+        {
+          "trigger": "bis",
+          "case": "akkusativ",
+          "gloss": "until; as far as",
+          "phrase": "bis nächsten Freitag",
+          "example": "Wir bleiben bis nächsten Freitag.",
+          "example_en": "We're staying until next Friday.",
+          "note": "Before an article, \"bis\" almost always hands over to another preposition -- \"bis zum Bahnhof\", where \"zu\" then takes the dative. The accusative shows on its own when there is no second preposition."
+        },
+        {
+          "trigger": "aus",
+          "case": "dativ",
+          "gloss": "out of; from",
+          "phrase": "aus der Schweiz",
+          "example": "Sie kommt aus der Schweiz.",
+          "example_en": "She's from Switzerland."
+        },
+        {
+          "trigger": "außer",
+          "case": "dativ",
+          "gloss": "except for; besides",
+          "phrase": "außer meinem Bruder",
+          "example": "Alle außer meinem Bruder waren da.",
+          "example_en": "Everyone except my brother was there."
+        },
+        {
+          "trigger": "bei",
+          "case": "dativ",
+          "gloss": "at; near; at someone's place",
+          "phrase": "bei meiner Tante",
+          "example": "Ich wohne bei meiner Tante.",
+          "example_en": "I live at my aunt's."
+        },
+        {
+          "trigger": "mit",
+          "case": "dativ",
+          "gloss": "with; by (transport)",
+          "phrase": "mit dem Bus",
+          "example": "Er fährt mit dem Bus.",
+          "example_en": "He goes by bus."
+        },
+        {
+          "trigger": "nach",
+          "case": "dativ",
+          "gloss": "after; to (a place name)",
+          "phrase": "nach dem Essen",
+          "example": "Nach dem Essen gehen wir spazieren.",
+          "example_en": "After dinner we'll go for a walk."
+        },
+        {
+          "trigger": "seit",
+          "case": "dativ",
+          "gloss": "since; for (a duration)",
+          "phrase": "seit einer Stunde",
+          "example": "Ich warte seit einer Stunde.",
+          "example_en": "I've been waiting for an hour."
+        },
+        {
+          "trigger": "von",
+          "case": "dativ",
+          "gloss": "from; of; by",
+          "phrase": "von meinem Vater",
+          "example": "Das ist ein Geschenk von meinem Vater.",
+          "example_en": "That's a present from my father."
+        },
+        {
+          "trigger": "zu",
+          "case": "dativ",
+          "gloss": "to (a person or place)",
+          "phrase": "zu ihrer Schwester",
+          "example": "Sie fährt zu ihrer Schwester.",
+          "example_en": "She's driving to see her sister."
+        },
+        {
+          "trigger": "gegenüber",
+          "case": "dativ",
+          "gloss": "opposite; towards (someone)",
+          "phrase": "gegenüber dem Bahnhof",
+          "example": "Die Bank liegt gegenüber dem Bahnhof.",
+          "example_en": "The bank is opposite the station.",
+          "note": "With a pronoun it usually follows rather than precedes -- \"mir gegenüber\", not \"gegenüber mir\". The case is dative either way."
+        },
+        {
+          "trigger": "ab",
+          "case": "dativ",
+          "gloss": "from (a point in time) onwards",
+          "phrase": "ab dem ersten Mai",
+          "example": "Ab dem ersten Mai wird es wärmer.",
+          "example_en": "From the first of May it gets warmer.",
+          "note": "With an article this is reliably dative. With a bare date it is not -- \"ab nächsten Montag\" (accusative) is the majority form across most of the German-speaking area, with the dative dominant mainly in Switzerland."
+        },
+        {
+          "trigger": "wegen",
+          "case": "genitiv",
+          "gloss": "because of",
+          "phrase": "wegen des Wetters",
+          "example": "Wegen des Wetters bleiben wir zu Hause.",
+          "example_en": "Because of the weather we're staying home.",
+          "note": "Very commonly heard with the dative -- \"wegen dem Wetter\". Standard written German wants the genitive."
+        },
+        {
+          "trigger": "trotz",
+          "case": "genitiv",
+          "gloss": "despite; in spite of",
+          "phrase": "trotz des Regens",
+          "example": "Trotz des Regens gingen wir spazieren.",
+          "example_en": "Despite the rain we went for a walk.",
+          "note": "The dative is more than colloquial here: it is regionally standard in southern Germany, Austria and Switzerland, and fixed in \"trotz allem\" and \"trotzdem\". Written standard German still wants the genitive."
+        },
+        {
+          "trigger": "während",
+          "case": "genitiv",
+          "gloss": "during",
+          "phrase": "während des Films",
+          "example": "Während des Films ist er eingeschlafen.",
+          "example_en": "He fell asleep during the film.",
+          "note": "Also a conjunction, where it governs no case at all -- \"während ich esse\". The genitive is only for the preposition."
+        },
+        {
+          "trigger": "statt",
+          "case": "genitiv",
+          "gloss": "instead of",
+          "phrase": "statt eines Autos",
+          "example": "Statt eines Autos kaufte er ein Fahrrad.",
+          "example_en": "Instead of a car he bought a bicycle.",
+          "note": "\"anstatt\" is the same word with the same case. Both are also conjunctions -- \"statt zu arbeiten\" -- where no case is governed."
+        },
+        {
+          "trigger": "außerhalb",
+          "case": "genitiv",
+          "gloss": "outside of",
+          "phrase": "außerhalb des Dorfes",
+          "example": "Das Haus liegt außerhalb des Dorfes.",
+          "example_en": "The house is outside the village."
+        },
+        {
+          "trigger": "innerhalb",
+          "case": "genitiv",
+          "gloss": "within; inside of",
+          "phrase": "innerhalb eines Jahres",
+          "example": "Innerhalb eines Jahres war alles fertig.",
+          "example_en": "Within a year everything was finished."
+        }
+      ]
+    },
+    {
+      "id": "de-verben-kasus",
+      "title": "Which case does this verb take?",
+      "subtitle": "The dative verbs, and the accusative ones they get confused with",
+      "drill": "case-3way",
+      "prerequisite": "de-praepositionen",
+      "answers": ["akkusativ", "dativ", "genitiv"],
+      "intro": {
+        "heading": "Most verbs take the accusative. The ones that don't are the ones worth drilling",
+        "body": [
+          "Most German verbs treat their object the way you would guess: \"Ich sehe den Mann\" -- the man is the done-to, so accusative. That is the default, and it is right far more often than not.",
+          "A small group does not work that way. \"Ich helfe dem Mann\", not \"den Mann\". Nothing about helping is less direct than seeing; the verb simply demands the dative, and no amount of reasoning about the sentence will predict it.",
+          "So this is a list to be known rather than a rule to be applied -- which is exactly what spaced repetition is for. The accusative verbs in here are not filler. Most are the near-twin of a dative verb in the same deck -- close in meaning, opposite in case -- and the rest are the ones learners most often put in the dative by mistake."
+        ],
+        "groups": [
+          {
+            "case": "dativ",
+            "label": "Dative -- the ones worth knowing first",
+            "members": "helfen, danken, gehören, folgen, antworten, passen, gratulieren, vertrauen, zuhören, begegnen",
+            "hook": "Several describe doing something *to or for* a person rather than *acting on* them -- helping, thanking, answering, congratulating. That is a hint, not a rule: it explains the group after you know it, but it will not reliably predict a verb you have not met."
+          },
+          {
+            "case": "dativ",
+            "label": "Dative -- the ones where the sentence turns around",
+            "members": "gefallen, fehlen, einfallen, auffallen, passieren, wehtun, leidtun, schmecken",
+            "hook": "In English *you* like the book; in German the book does the pleasing and you are in the dative -- \"Das Buch gefällt mir\". The same shape covers missing something, a name coming back to you, noticing something and being in pain. Once you see the pattern these stop being separate facts."
+          },
+          {
+            "case": "akkusativ",
+            "label": "Accusative -- the traps",
+            "members": "anrufen, fragen, treffen, unterstützen, stören, mögen, bitten, verstehen",
+            "hook": "Most of these have a near-twin in the dative lists, and the twin takes the other case: unterstützen against helfen, fragen against antworten, treffen against begegnen, mögen against gefallen. Where the meanings are closest the cases diverge, which is exactly why they are worth drilling together. \"anrufen\" is here for a different reason -- it is simply the single most mis-cased verb learners produce."
+          }
+        ],
+        "closing": "A useful habit: learn a new verb together with the case it takes, the way you learn a noun together with its article."
+      },
+      "items": [
+        {
+          "trigger": "helfen",
+          "case": "dativ",
+          "gloss": "to help",
+          "phrase": "dem Mann helfen",
+          "example": "Ich helfe meinem Bruder.",
+          "example_en": "I'm helping my brother."
+        },
+        {
+          "trigger": "danken",
+          "case": "dativ",
+          "gloss": "to thank",
+          "phrase": "dem Lehrer danken",
+          "example": "Wir danken dem Lehrer.",
+          "example_en": "We thank the teacher."
+        },
+        {
+          "trigger": "gefallen",
+          "case": "dativ",
+          "gloss": "to please, to be liked by",
+          "phrase": "meinem Bruder gefallen",
+          "example": "Das Buch gefällt meiner Schwester.",
+          "example_en": "My sister likes the book.",
+          "note": "The English subject and German subject swap: the *book* is doing the pleasing, and the person who likes it is in the dative."
+        },
+        {
+          "trigger": "gehören",
+          "case": "dativ",
+          "gloss": "to belong to",
+          "phrase": "meiner Schwester gehören",
+          "example": "Das Auto gehört meiner Schwester.",
+          "example_en": "The car belongs to my sister."
+        },
+        {
+          "trigger": "folgen",
+          "case": "dativ",
+          "gloss": "to follow",
+          "phrase": "dem Hund folgen",
+          "example": "Der Hund folgt seinem Herrchen.",
+          "example_en": "The dog follows its owner."
+        },
+        {
+          "trigger": "antworten",
+          "case": "dativ",
+          "gloss": "to answer (a person)",
+          "phrase": "dem Lehrer antworten",
+          "example": "Er antwortet dem Lehrer nicht.",
+          "example_en": "He isn't answering the teacher.",
+          "note": "The person answered is dative. To answer a *question*, German uses \"auf\" with the accusative -- \"auf die Frage antworten\"."
+        },
+        {
+          "trigger": "passen",
+          "case": "dativ",
+          "gloss": "to suit, to be convenient for",
+          "phrase": "meinem Chef passen",
+          "example": "Der Termin passt meinem Chef nicht.",
+          "example_en": "The appointment doesn't suit my boss."
+        },
+        {
+          "trigger": "schmecken",
+          "case": "dativ",
+          "gloss": "to taste good to",
+          "phrase": "den Kindern schmecken",
+          "example": "Das Essen schmeckt den Kindern.",
+          "example_en": "The children like the food."
+        },
+        {
+          "trigger": "gratulieren",
+          "case": "dativ",
+          "gloss": "to congratulate",
+          "phrase": "dem Gewinner gratulieren",
+          "example": "Wir gratulieren dem Gewinner.",
+          "example_en": "We congratulate the winner."
+        },
+        {
+          "trigger": "vertrauen",
+          "case": "dativ",
+          "gloss": "to trust",
+          "phrase": "ihrer Freundin vertrauen",
+          "example": "Sie vertraut ihrer Freundin.",
+          "example_en": "She trusts her friend."
+        },
+        {
+          "trigger": "zuhören",
+          "case": "dativ",
+          "gloss": "to listen to",
+          "phrase": "dem Lehrer zuhören",
+          "example": "Die Kinder hören dem Lehrer zu.",
+          "example_en": "The children are listening to the teacher.",
+          "note": "A separable verb: the \"zu\" goes to the end of the clause."
+        },
+        {
+          "trigger": "fehlen",
+          "case": "dativ",
+          "gloss": "to be missed by",
+          "phrase": "meinem Bruder fehlen",
+          "example": "Meine Familie fehlt mir.",
+          "example_en": "I miss my family.",
+          "note": "Another swap: the thing missed is the subject, and the person doing the missing is in the dative."
+        },
+        {
+          "trigger": "widersprechen",
+          "case": "dativ",
+          "gloss": "to contradict",
+          "phrase": "seinem Chef widersprechen",
+          "example": "Er widerspricht seinem Chef.",
+          "example_en": "He contradicts his boss."
+        },
+        {
+          "trigger": "schaden",
+          "case": "dativ",
+          "gloss": "to harm, to be bad for",
+          "phrase": "der Gesundheit schaden",
+          "example": "Rauchen schadet der Gesundheit.",
+          "example_en": "Smoking harms your health."
+        },
+        {
+          "trigger": "begegnen",
+          "case": "dativ",
+          "gloss": "to meet, to run into",
+          "phrase": "meinem Nachbarn begegnen",
+          "example": "Ich bin meinem Nachbarn begegnet.",
+          "example_en": "I ran into my neighbour.",
+          "note": "Takes \"sein\" in the perfect, not \"haben\"."
+        },
+        {
+          "trigger": "dienen",
+          "case": "dativ",
+          "gloss": "to serve",
+          "phrase": "dem Frieden dienen",
+          "example": "Der Raum dient meinem Bruder als Lager.",
+          "example_en": "The room serves my brother as a storeroom."
+        },
+        {
+          "trigger": "leidtun",
+          "case": "dativ",
+          "gloss": "to be sorry; to feel sorry for",
+          "phrase": "mir leidtun",
+          "example": "Es tut mir leid, dass ich zu spät bin.",
+          "example_en": "I'm sorry I'm late.",
+          "note": "The dative is the person who feels it, and the subject is what is regretted -- so \"er tut mir leid\" means I feel sorry for *him*. Written as one word in the infinitive, \"leidtun\", even though you only ever meet it split: \"tut mir leid\"."
+        },
+        {
+          "trigger": "wehtun",
+          "case": "dativ",
+          "gloss": "to hurt (someone)",
+          "phrase": "meinem Bruder wehtun",
+          "example": "Mein Rücken tut mir weh.",
+          "example_en": "My back hurts.",
+          "note": "The body part is the subject and the person is in the dative -- German says the back does the hurting to you. One word in the infinitive, \"wehtun\", though you only ever meet it split: \"tut mir weh\"."
+        },
+        {
+          "trigger": "es geht jemandem (gut)",
+          "case": "dativ",
+          "gloss": "to be doing (well), of health and mood",
+          "phrase": "es geht deinem Vater gut",
+          "example": "Wie geht es deinem Vater?",
+          "example_en": "How is your father doing?",
+          "note": "The trigger here is the whole impersonal construction, not the verb: ordinary \"gehen\" means to walk or to go and takes no object at all. This is the shape behind \"wie geht es dir?\", which you will use more often than any other dative in the language."
+        },
+        {
+          "trigger": "einfallen",
+          "case": "dativ",
+          "gloss": "to come to mind, to occur to",
+          "phrase": "meinem Bruder einfallen",
+          "example": "Mir fällt sein Name nicht ein.",
+          "example_en": "I can't think of his name.",
+          "note": "Separable, and turned around like \"gefallen\": the name does the occurring, and the person it occurs to is in the dative."
+        },
+        {
+          "trigger": "passieren",
+          "case": "dativ",
+          "gloss": "to happen to",
+          "phrase": "meinem Bruder passieren",
+          "example": "Was ist deinem Bruder passiert?",
+          "example_en": "What happened to your brother?",
+          "note": "Takes \"sein\" in the perfect in this meaning. A separate transitive \"passieren\" means to pass through something and takes the accusative with \"haben\" -- \"die Grenze passieren\". That one is far rarer in speech than \"was ist dir passiert?\"."
+        },
+        {
+          "trigger": "auffallen",
+          "case": "dativ",
+          "gloss": "to be noticed by, to strike (someone)",
+          "phrase": "meinem Chef auffallen",
+          "example": "Ist dir sein neues Auto aufgefallen?",
+          "example_en": "Did you notice his new car?",
+          "note": "Separable, takes \"sein\" in the perfect, and turned around: the thing noticed is the subject."
+        },
+        {
+          "trigger": "anrufen",
+          "case": "akkusativ",
+          "gloss": "to call, to phone",
+          "phrase": "meinen Bruder anrufen",
+          "example": "Ich rufe dich später an.",
+          "example_en": "I'll call you later.",
+          "note": "The classic trap. \"anrufen\" is accusative -- \"ich rufe dich an\", not \"dir\"; Swiss Standard German is the exception, where \"ich rufe dir an\" is normal. \"telefonieren\" governs no case of its own: you reach the person through \"mit\", and it is \"mit\" that demands the dative -- \"mit dir telefonieren\"."
+        },
+        {
+          "trigger": "fragen",
+          "case": "akkusativ",
+          "gloss": "to ask (a person)",
+          "phrase": "meinen Lehrer fragen",
+          "example": "Ich frage meinen Lehrer.",
+          "example_en": "I'll ask my teacher.",
+          "note": "Opposite of its twin: you ask someone in the accusative but answer them in the dative -- \"ich frage den Lehrer\", \"ich antworte dem Lehrer\"."
+        },
+        {
+          "trigger": "treffen",
+          "case": "akkusativ",
+          "gloss": "to meet (by arrangement)",
+          "phrase": "meinen Freund treffen",
+          "example": "Ich treffe meinen Freund am Bahnhof.",
+          "example_en": "I'm meeting my friend at the station.",
+          "note": "Accusative, unlike \"begegnen\" for running into someone by chance, which is dative. Watch the reflexive form though: \"sich mit jemandem treffen\" is just as common for an arranged meeting, and there the person sits after \"mit\" and is therefore dative."
+        },
+        {
+          "trigger": "unterstützen",
+          "case": "akkusativ",
+          "gloss": "to support",
+          "phrase": "ihren Bruder unterstützen",
+          "example": "Sie unterstützt ihren Bruder.",
+          "example_en": "She supports her brother.",
+          "note": "The near-twin of \"helfen\", and the opposite case: \"sie hilft ihrem Bruder\" but \"sie unterstützt ihren Bruder\"."
+        },
+        {
+          "trigger": "stören",
+          "case": "akkusativ",
+          "gloss": "to disturb, to bother",
+          "phrase": "meinen Nachbarn stören",
+          "example": "Der Lärm stört meinen Nachbarn.",
+          "example_en": "The noise is bothering my neighbour.",
+          "note": "Accusative. Worth holding next to \"schaden\", which is dative -- both are things you do to someone's detriment, and they take different cases."
+        },
+        {
+          "trigger": "mögen",
+          "case": "akkusativ",
+          "gloss": "to like",
+          "phrase": "deinen Bruder mögen",
+          "example": "Ich mag deinen Bruder.",
+          "example_en": "I like your brother.",
+          "note": "Here the German matches the English, which is exactly why it is worth drilling next to \"gefallen\" -- same meaning, opposite construction: \"ich mag es\" but \"es gefällt mir\". As a modal with another verb (\"ich mag nicht kommen\", \"ich möchte\") it governs nothing."
+        },
+        {
+          "trigger": "bitten",
+          "case": "akkusativ",
+          "gloss": "to ask for, to request",
+          "phrase": "meinen Chef bitten",
+          "example": "Ich bitte meinen Chef um einen freien Tag.",
+          "example_en": "I'm asking my boss for a day off.",
+          "note": "Accusative for the person, with \"um\" plus accusative for the thing. Its neighbour \"danken\" is dative."
+        },
+        {
+          "trigger": "verstehen",
+          "case": "akkusativ",
+          "gloss": "to understand",
+          "phrase": "deinen Vater verstehen",
+          "example": "Ich verstehe deinen Vater nicht.",
+          "example_en": "I don't understand your father."
+        }
+      ]
+    }
+  ]
+}
