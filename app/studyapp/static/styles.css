@@ -321,4 +321,116 @@ body {
   padding: 4px 16px 16px;
 }
 
+/* The hint wrapper exists so the three drop-zone labels can be hidden as one.
+   It is stretched over the stage's padding box, which is the containing block
+   the hints already resolved against, so wrapping them changed nothing about
+   where they sit. */
+#hints {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Which deck is open, in the header, with the way back out. */
+.deck-line { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+#deck-title { color: var(--text); font-weight: 600; }
+
+/* The shelf and the introduction are documents, not dialogs: they are read
+   rather than answered, and they run longer than the viewport. They keep the
+   panel's surface but take a wider column and scroll inside themselves, so the
+   header stays put and the page behind them never moves. Text selection is
+   turned back on for the same reason — the rest of the app suppresses it so a
+   swipe cannot select a card, but that is exactly wrong for prose. */
+.decks-panel, .intro-panel {
+  width: min(94vw, 560px);
+  max-height: min(76vh, 720px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  text-align: left;
+  padding: 24px 22px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.decks-panel h2, .intro-panel h2 { margin: 0 0 16px; }
+
+/* The shelf */
+.deck-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.deck-card {
+  border: 1px solid rgba(154, 163, 199, 0.22);
+  border-radius: 16px;
+  background: var(--bg-2);
+  padding: 16px 16px 14px;
+}
+/* A locked deck is dimmed but never hidden: what comes next is most of the
+   reason to finish what you are on. */
+.deck-card.locked { opacity: 0.62; }
+.panel .deck-card-title { margin: 0 0 3px; font-size: 17px; }
+.panel .deck-card-subtitle { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.panel .deck-card-stat { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.deck-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+.deck-card-actions .primary { padding: 9px 18px; font-size: 15px; }
+.deck-card-soon { color: var(--muted); font-size: 13px; font-weight: 600; }
+
+/* Progress track. On an open deck it runs over the deck itself; on a locked one
+   it runs over the deck that gates it, which is the one the learner can move. */
+.bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(154, 163, 199, 0.25);
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--der);
+  transition: width 220ms ease;
+}
+.deck-card.locked .bar-fill { background: var(--muted); }
+
+/* The introduction */
+.panel .intro-body p { margin: 0 0 12px; font-size: 14px; line-height: 1.55; color: var(--muted); }
+.intro-groups {
+  list-style: none;
+  margin: 18px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* Each block is edged in the colour of the button it leads to, so the
+   explanation and the drill read as one thing. The three answer colours are
+   positional — first, second, third — which is why a case deck can borrow the
+   gender palette without either meaning anything about the other. */
+.intro-group {
+  border-left: 3px solid var(--muted);
+  border-radius: 0 12px 12px 0;
+  background: var(--bg-2);
+  padding: 12px 14px;
+}
+.intro-group[data-answer="der"], .intro-group[data-answer="akkusativ"] { border-left-color: var(--der); }
+.intro-group[data-answer="die"], .intro-group[data-answer="dativ"] { border-left-color: var(--die); }
+.intro-group[data-answer="das"], .intro-group[data-answer="genitiv"] { border-left-color: var(--das); }
+.panel .intro-group-label { margin: 0 0 5px; font-size: 14px; font-weight: 700; color: var(--text); }
+.panel .intro-group-members { margin: 0 0 7px; font-size: 15px; font-weight: 600; }
+.panel .intro-group-hook { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.panel .intro-closing {
+  margin: 0 0 18px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
 .hidden, [hidden] { display: none !important; }

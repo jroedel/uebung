@@ -26,14 +26,17 @@ import (
 
 	"github.com/jroedel/uebung/app/authapp"
 	"github.com/jroedel/uebung/app/studyapp"
+	"github.com/jroedel/uebung/business/domain/curriculum/curriculumbus"
+	curriculumseed "github.com/jroedel/uebung/business/domain/curriculum/stores/seeddb"
 	"github.com/jroedel/uebung/business/domain/identity/identitybus"
 	"github.com/jroedel/uebung/business/domain/identity/mailers/loginmail"
 	"github.com/jroedel/uebung/business/domain/identity/nicknamer"
 	identitydb "github.com/jroedel/uebung/business/domain/identity/stores/sqlitedb"
 	studydb "github.com/jroedel/uebung/business/domain/study/stores/sqlitedb"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
-	"github.com/jroedel/uebung/business/domain/vocab/stores/seeddb"
+	vocabseed "github.com/jroedel/uebung/business/domain/vocab/stores/seeddb"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
+	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/fsrs"
 	"github.com/jroedel/uebung/foundation/mailer"
@@ -55,6 +58,7 @@ func run() error {
 	dataPath := flag.String("data", "uebung.db", "path to the SQLite database")
 	batchLimit := flag.Int("batch", 20, "cards per preloaded batch")
 	retention := flag.Float64("retention", 0.9, "FSRS desired retention, in (0,1)")
+	unlockFraction := flag.Float64("unlock-fraction", 0, "share of a deck that must be seen before the next one opens, in (0,1]; 0 takes the default")
 
 	linkBase := flag.String("link-base", "", "absolute URL of the sign-in callback, e.g. https://uebung.club/auth/callback")
 	trustProxy := flag.Bool("trust-proxy", false, "believe X-Forwarded-For for rate limiting; only with a trusted proxy in front")
@@ -96,7 +100,21 @@ func run() error {
 	}
 
 	// Business.
-	vocab := vocabbus.NewBusiness(seeddb.New())
+	vocab := vocabbus.NewBusiness(vocabseed.New())
+
+	// The catalog is validated as it loads, so a deck whose prerequisite does not
+	// exist, or whose introduction explains an answer the deck never asks for,
+	// stops the server here with the offending deck named — rather than presenting
+	// a learner with a shelf item that cannot be opened.
+	curriculum, err := curriculumbus.NewBusiness(curriculumseed.New(),
+		curriculumbus.Config{UnlockFraction: *unlockFraction})
+	if err != nil {
+		return fmt.Errorf("preparing curriculum: %w", err)
+	}
+
+	if _, err := curriculum.Catalog(ctx, langcode.German); err != nil {
+		return fmt.Errorf("loading catalog: %w", err)
+	}
 
 	fsrsParams := fsrs.Default()
 	fsrsParams.DesiredRetention = *retention
@@ -158,12 +176,18 @@ func run() error {
 	app := studyapp.New(studyapp.Config{
 		Vocab:      vocab,
 		Study:      study,
+		Curriculum: curriculum,
 		BatchLimit: *batchLimit,
 		Now:        time.Now,
 		Static:     studyapp.Assets(),
 		Log:        log,
 		Auth:       authenticator,
-		Health:     db.PingContext,
+		// Not db.PingContext. A ping proves the connection is alive and reads no
+		// table, so it answers 200 against a schema this binary cannot use — the
+		// state a rolled-back deploy leaves behind. studyStore.Check reads the
+		// columns the app actually queries, so that failure is loud and deploy.sh
+		// reports the rollback as failed instead of successful.
+		Health: studyStore.Check,
 	})
 
 	// Routing: the auth app owns /auth/, the study app owns everything else. Go's

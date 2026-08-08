@@ -1,6 +1,9 @@
 package studyapp
 
 import (
+	"slices"
+
+	"github.com/jroedel/uebung/business/domain/curriculum/curriculumbus"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
 	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/rating"
@@ -55,6 +58,54 @@ func toBusGradeRequest(req gradeRequest) (langcode.LangCode, []gradedResult, err
 	}
 
 	return lang, results, fes.ErrorOrNil()
+}
+
+// fromBusDeckResponse flattens a catalog Deck, its gate and the learner's
+// standing in it into one wire entry. Every strong type is stringified here and
+// nowhere else; the counts arrive already computed because they are composed from
+// two domains and that composition is the handler's job, not a converter's.
+func fromBusDeckResponse(d curriculumbus.Deck, g curriculumbus.Gate, requiresTitle string, size, learned, dueNow int) deckResponse {
+	return deckResponse{
+		ID:       d.ID.String(),
+		Title:    d.Title,
+		Subtitle: d.Subtitle,
+		Drill:    d.Drill.String(),
+		Answers:  slices.Clone(d.Answers),
+
+		DeckSize: size,
+		Learned:  learned,
+		DueNow:   dueNow,
+
+		Unlocked:      g.Met,
+		Requires:      g.Requires.String(),
+		RequiresTitle: requiresTitle,
+		RequiresSeen:  g.Seen,
+		RequiresNeed:  g.Need,
+
+		IntroSeen: learned > 0,
+
+		Intro: fromBusIntroResponse(d.Intro),
+	}
+}
+
+// fromBusIntroResponse flattens a deck's introduction.
+func fromBusIntroResponse(in curriculumbus.Intro) introResponse {
+	groups := make([]introGroupResponse, 0, len(in.Groups))
+	for _, g := range in.Groups {
+		groups = append(groups, introGroupResponse{
+			Answer:  g.Answer,
+			Label:   g.Label,
+			Members: g.Members,
+			Hook:    g.Hook,
+		})
+	}
+
+	return introResponse{
+		Heading: in.Heading,
+		Body:    slices.Clone(in.Body),
+		Groups:  groups,
+		Closing: in.Closing,
+	}
 }
 
 // fromBusNounResponse flattens a Business Noun into a wire card, converting the

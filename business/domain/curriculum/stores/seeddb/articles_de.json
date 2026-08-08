@@ -1,0 +1,43 @@
+{
+  "language": "de",
+  "description": "Catalog entry for the original noun-gender deck. Its items are not here: they live in business/domain/vocab/stores/seeddb/nouns_de.json and are loaded by the vocab domain, which owned them before a catalog existed. This file carries only what the shelf needs — the title, the introduction, and the fact that nothing gates it.",
+  "decks": [
+    {
+      "id": "der-die-das",
+      "title": "der · die · das",
+      "subtitle": "Gender for the nouns that turn up most in film and television subtitles",
+      "drill": "article-3way",
+      "prerequisite": "",
+      "answers": ["der", "die", "das"],
+      "intro": {
+        "heading": "Gender lives in the word, not in the thing",
+        "body": [
+          "German gender is not a fact about the object. \"das Mädchen\" is a girl and neuter; \"der Löffel\" and \"die Gabel\" lie side by side on the same table. Searching the meaning for a reason is the one approach that is guaranteed to fail, and most people spend a while doing it anyway.",
+          "What does predict gender is the shape of the word, and above all its ending. A handful of endings are close to exceptionless, and they cover a real slice of the language -- for those words, gender stops being something you remember and becomes something you can see.",
+          "The rest have to be learned one at a time, which is what this deck is for. The one habit worth forming: learn a word as \"die Tür\", never as \"Tür, feminine\". The article is part of the word, not a label attached to it afterwards -- and that is also how you will need it when you start declining things."
+        ],
+        "groups": [
+          {
+            "answer": "die",
+            "label": "Feminine -- the most predictable of the three",
+            "members": "-ung, -heit, -keit, -schaft, -ion, -tät, -ei, -ik",
+            "hook": "These are as near exceptionless as German gets: every -ung, every -heit, every -keit is feminine, without exception worth mentioning. Nouns ending in -e are usually feminine too, but that one is a tendency rather than a rule -- der Name, der Junge and das Ende are all common words that break it."
+          },
+          {
+            "answer": "der",
+            "label": "Masculine",
+            "members": "-ling, -ismus, -ant, -ent, -or, and -er when it means someone who does something",
+            "hook": "Days, months and seasons are masculine as a block -- der Montag, der Mai, der Sommer -- and so are the compass points. Be careful with -er: it is reliable for people (der Fahrer, der Lehrer) and says nothing whatever about things (das Fenster, das Wasser, die Mutter, die Butter)."
+          },
+          {
+            "answer": "das",
+            "label": "Neuter",
+            "members": "-chen, -lein, -um, -ment",
+            "hook": "-chen and -lein beat everything else, which is exactly why das Mädchen is neuter. Any infinitive used as a noun is neuter too, with no exceptions at all: das Essen, das Leben, das Lernen. Watch two traps -- der Moment is the -ment that got away, and the native -ling is masculine (der Frühling) where the borrowed -ing is not (das Training)."
+          }
+        ],
+        "closing": "Stuck with nothing to go on? Guess der. It is the most common answer in this deck, at roughly two in five -- but only just ahead of die, so treat it as a tie-breaker and not a strategy. The endings above are where the real winnings are."
+      }
+    }
+  ]
+}

@@ -9,7 +9,9 @@ Two companions:
 - **[production_recon.md](production_recon.md)** — facts about the machine itself.
   Read it before planning anything.
 - **`deploy/`** — working tooling to copy: `deploy.sh`, `run.sh`, `supervise.sh`,
-  `uebung.htaccess`, `uebung.service`, `deploy.env.example`.
+  `uebung.htaccess`, `uebung.service`, `deploy.env.example`, and
+  `rehearse-rollback.sh` (local-only; it opens no SSH session and is safe for
+  anyone to run).
 
 **Agents must not SSH to this host** — see *Production access* in
 [AGENTS.md](AGENTS.md). Everything below is for a person to run.
@@ -38,7 +40,7 @@ Get these right in the code and the deployment is mostly mechanical.
 | Requirement | Why |
 |---|---|
 | Bind `127.0.0.1:PORT`, configurable | It must be unreachable except through Apache's TLS. Do **not** open a firewall port. |
-| Serve `/healthz`, and have it touch the database | The deploy uses it. "Listening" is not "working". |
+| Serve `/healthz`, and have it **read the columns the app queries** | The deploy uses it, and "listening" is not "working". A `Ping` is not enough: it proves a connection is alive and touches no table, so it answers 200 against a schema the binary cannot use — which is exactly what a rolled-back deploy leaves behind. |
 | Graceful shutdown on **SIGINT** | Both supervisors send SIGINT so in-flight requests drain and SQLite closes cleanly. |
 | `ReadTimeout`, `WriteTimeout`, `IdleTimeout` | `ReadHeaderTimeout` alone lets a connection dawdle once headers are in. |
 | Decide cookie `Secure` **once at startup** | Never from `X-Forwarded-Proto`. Apache leaves `r.TLS` nil and `mod_proxy_http` does not send that header, so inference silently ships session cookies without `Secure`. Derive it from your configured public URL scheme. |
@@ -236,6 +238,79 @@ binary from a misconfigured web server. Checking only the public URL reverts goo
 releases whenever Apache is wrong — discarding the release *and* hiding the actual
 fault.
 
+## Schema migrations
+
+**A rollback restores the binary. It does not restore the database, and no
+executable swap can undo a migration.** Step 11 therefore has a blind spot the
+moment a release changes the schema, and it is worth knowing its exact shape
+before you need it.
+
+Rehearse it first. Both of these run locally and neither touches the server:
+
+```bash
+# 1. Does real data survive the migration? Point it at a backup, not a live file.
+make test-integration UEBUNG_REHEARSAL_DB=path/to/backups/uebung-<stamp>.db
+
+# 2. What does the old binary do against a migrated database?
+deploy/rehearse-rollback.sh path/to/backups/uebung-<stamp>.db
+```
+
+The second one exists because the answer is not obvious and, for the deck
+migration, was the worst of the available answers:
+
+- the old build's `CREATE TABLE IF NOT EXISTS` is a no-op against the rebuilt
+  table, so **it starts cleanly**;
+- its `/healthz` was wired to `db.PingContext`, which proves the connection is
+  alive and reads no table, so **the probe answers 200**;
+- every study request then fails on a column that no longer exists.
+
+So `deploy.sh` health-checks a rolled-back app, gets its 200, and reports success
+while the site is unusable. Nothing in the deploy output says otherwise.
+
+**This is fixed going forward, and the fix is one release behind the problem.**
+`/healthz` now runs `sqlitedb.Store.Check`, which selects the app's real column
+lists from both tables, so a binary meeting a schema it cannot use fails its own
+probe. A rollback then fails *loudly* and `deploy.sh` reports it as failed.
+
+The catch is which binary answers. Rolling back restores the **previous** build,
+and the previous build carries whatever health check it was compiled with. So the
+first release after this one still rolls back silently — it is the old binary that
+does the probing — and every release after that does not. Run
+`rehearse-rollback.sh` and read the verdict rather than assuming which case you
+are in; it prints `SILENT ROLLBACK FAILURE CONFIRMED` or `ROLLBACK FAILS LOUDLY`
+from the two binaries actually running.
+
+### Restoring after a failed migration
+
+`deploy.sh` backs the database up **after stopping the app and before swapping the
+binary**, so the newest file in `backups/` is always a clean pre-migration
+snapshot. Restoring it is a manual step, on the server, by a person:
+
+```bash
+cd <app dir>
+./supervise.sh stop                       # or the systemd equivalent
+
+ls -1t backups/uebung-*.db | head -3      # newest is the pre-migration copy
+cp backups/uebung-<stamp>.db uebung.db
+[ -f backups/uebung-<stamp>.db-wal ] && cp backups/uebung-<stamp>.db-wal uebung.db-wal
+rm -f uebung.db-shm                       # stale against a restored file
+
+chmod 600 uebung.db uebung.db-wal 2>/dev/null || true
+./supervise.sh start
+curl -fsS http://127.0.0.1:<port>/healthz
+```
+
+Then confirm the deck actually reads, because `/healthz` will not tell you:
+
+```bash
+curl -s https://<domain>/api/summary?lang=de     # expect real counts, not a 500
+```
+
+Two things make this safe to do under pressure: the backup is taken with the
+writer stopped, so it cannot be torn; and `uebung.prev` is kept beside the binary,
+so the pair can be put back together. Copy the WAL whenever one exists — without
+it a restored database silently reads as an older state.
+
 ## Troubleshooting: symptom to cause
 
 The response **body** matters as much as the status code.
@@ -248,6 +323,8 @@ The response **body** matters as much as the status code.
 | 404 on everything, site otherwise fine | Document root points somewhere unexpected. |
 | **503** on every path | The `[P]` proxy is configured and the backend is down. |
 | `301` with `Location: ./`, loops | `http.FileServer` + `DirectoryIndex`. Fix both sides. |
+| `/healthz` is **200** but every real page 500s, just after a rolled-back deploy | The binary went back and the database did not, and the restored binary's health check is a bare ping, which cannot see it. Restore the database — see *Schema migrations*. |
+| A deploy rolls back and `/healthz` then **fails** on loopback | Same cause, reported honestly: the restored binary reads its real columns and cannot. Restore the database the same way; the difference is that `deploy.sh` told you. |
 | Deploy hangs right after starting the app | Child inherited stdin; add `</dev/null`. |
 | Second `start` blocks forever | Child inherited the `flock` fd; add `9>&-`. |
 | Watchdog starts duplicate instances | PID file holds `setsid`'s pid, not the app's. |

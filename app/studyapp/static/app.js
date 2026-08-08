@@ -12,6 +12,7 @@
 const API = {
   lang: "de",
   limit: 20,
+  decks: (lang) => `/api/decks?lang=${encodeURIComponent(lang)}`,
   batch: (lang, limit) => `/api/batch?lang=${encodeURIComponent(lang)}&limit=${limit}`,
   grade: "/api/grade",
   summary: (lang) => `/api/summary?lang=${encodeURIComponent(lang)}`,
@@ -21,6 +22,15 @@ const API = {
   nickname: "/auth/nickname",
   skipNickname: "/auth/nickname/skip",
 };
+
+// The drills this client knows how to put on screen.
+//
+// The server describes a deck's drill and says nothing about whether a browser
+// can render it, which is the right division: a deck's shape is a fact about the
+// deck, and what this file can draw is a fact about this file. A deck whose drill
+// is not in here still appears on the shelf with its introduction — the writing is
+// worth reading before the drill exists — but it cannot be started.
+const RENDERABLE_DRILLS = new Set(["article-3way"]);
 
 // Direction → article. Left = der, Up = das, Right = die. Chosen so the two
 // horizontal swipes (the most common gesture) cover the two most frequent
@@ -86,8 +96,24 @@ const el = {
   misses: document.getElementById("misses"),
   missList: document.getElementById("miss-list"),
   againBtn: document.getElementById("again-btn"),
+  panelDecksBtn: document.getElementById("panel-decks-btn"),
   statusPanel: document.getElementById("status-panel"),
   statusText: document.getElementById("status-text"),
+  decksPanel: document.getElementById("decks-panel"),
+  deckList: document.getElementById("deck-list"),
+  deckLine: document.getElementById("deck-line"),
+  deckTitle: document.getElementById("deck-title"),
+  decksBtn: document.getElementById("decks-btn"),
+  rereadBtn: document.getElementById("reread-btn"),
+  introPanel: document.getElementById("intro-panel"),
+  introHeading: document.getElementById("intro-heading"),
+  introBody: document.getElementById("intro-body"),
+  introGroups: document.getElementById("intro-groups"),
+  introClosing: document.getElementById("intro-closing"),
+  introStartBtn: document.getElementById("intro-start-btn"),
+  introBackBtn: document.getElementById("intro-back-btn"),
+  footer: document.getElementById("footer"),
+  hintBox: document.getElementById("hints"),
   hints: {
     left: document.querySelector(".hint-left"),
     up: document.querySelector(".hint-up"),
@@ -96,6 +122,8 @@ const el = {
 };
 
 const state = {
+  decks: [],     // the shelf, as /api/decks describes it
+  deck: null,    // the deck being studied, or null on the shelf
   cards: [],     // {lemma, article, gloss, example, example_en}
   index: 0,      // current card
   results: [],   // {lemma, rating}
@@ -105,6 +133,50 @@ const state = {
   timers: [],    // pending reveal timeouts, cleared if the reveal is cut short
   suggestion: "", // the nickname currently offered on the skip button
 };
+
+// --- stale page recovery -----------------------------------------------------
+
+// This release is the first to serve the client with an ETag, which means it is
+// also the last one that can meet a page cached without one. Every earlier build
+// sent index.html with no ETag, no Last-Modified and no Cache-Control, so a
+// browser was free to keep it and pair it with a freshly fetched app.js — and this
+// script reaches for elements that page does not contain. Unguarded, that is a
+// TypeError on the first null and a white screen.
+//
+// So: check for something only the current page has, and if it is missing, reload
+// past the cache. A query string is a different cache key, which is the reliable
+// way to make a browser go and ask. Once reloaded, the page carries an ETag and
+// this can never fire again.
+const CURRENT_PAGE_MARKERS = ["decks-panel", "deck-list", "intro-panel", "hints"];
+const RELOAD_FLAG = "uebung-reloaded-past-cache";
+
+// recoverIfStale returns true when it has taken over — the caller must stop.
+function recoverIfStale() {
+  if (CURRENT_PAGE_MARKERS.every((id) => document.getElementById(id))) return false;
+
+  // Only once. If the reload lands on the same stale page the cache is beyond
+  // reach from here, and looping would be worse than saying so.
+  let alreadyTried = true;
+  try {
+    alreadyTried = sessionStorage.getItem(RELOAD_FLAG) === "1";
+    if (!alreadyTried) sessionStorage.setItem(RELOAD_FLAG, "1");
+  } catch (err) {
+    // Private browsing can throw on sessionStorage. Reloading blind risks a
+    // loop, so treat it as already tried and show the message instead.
+    console.error(err);
+  }
+
+  if (alreadyTried) {
+    document.body.textContent =
+      "This page is an old cached copy. Please reload with Ctrl-Shift-R (Cmd-Shift-R on a Mac).";
+
+    return true;
+  }
+
+  location.replace(`${location.pathname}?fresh=${Date.now()}`);
+
+  return true;
+}
 
 // --- sign-in ---------------------------------------------------------------
 
@@ -146,8 +218,7 @@ async function start() {
     return;
   }
 
-  loadSummary();
-  loadBatch();
+  showShelf();
 }
 
 // showAccount renders the header's identity line. The nickname leads because it
@@ -161,12 +232,8 @@ function showAccount(me) {
 // callback, which redirects here with ?signin=expired rather than reporting why a
 // link failed -- expired, already used and forged all look the same on purpose.
 function showSignIn() {
-  hide(el.statusPanel);
+  hideEverything();
   hide(el.account);
-  hide(el.controls);
-  hide(el.stats);
-  hide(el.nicknamePanel);
-  clearStack();
 
   if (new URLSearchParams(location.search).get("signin") === "expired") {
     el.signinBody.textContent =
@@ -230,11 +297,7 @@ async function requestLink(e) {
 // the button, the server quietly assigns a different one — which is why the
 // assigned name is always read back from the response rather than assumed.
 function showNicknamePrompt(suggestion) {
-  hide(el.statusPanel);
-  hide(el.panel);
-  hide(el.controls);
-  hide(el.stats);
-  clearStack();
+  hideEverything();
 
   el.nicknameTitle.textContent = "Pick a nickname";
   el.nicknameBody.textContent =
@@ -280,11 +343,7 @@ async function openRename() {
 // There is a cancel instead, because unlike the first-time prompt this panel was
 // opened deliberately and has somewhere to go back to.
 function showRename(current) {
-  hide(el.statusPanel);
-  hide(el.panel);
-  hide(el.controls);
-  hide(el.stats);
-  clearStack();
+  hideEverything();
   hide(el.nicknameSkipLine);
   show(el.nicknameCancelLine);
 
@@ -380,13 +439,261 @@ function finishNickname(me) {
   resetNicknameButton();
   el.nicknameSkipBtn.disabled = false;
 
-  loadSummary();
-  loadBatch();
+  showShelf();
 }
 
 function resetNicknameButton() {
   el.nicknameBtn.disabled = false;
   el.nicknameBtn.textContent = "Save";
+}
+
+// --- the shelf ---------------------------------------------------------------
+
+// hideEverything clears the stage so a screen can be shown without inheriting
+// whatever was up before it. Every screen calls this first, which is why none of
+// them has to know which screen it is replacing.
+function hideEverything() {
+  clearTimers();
+  clearStack();
+  state.advance = null;
+  state.locked = false;
+
+  hide(el.statusPanel);
+  hide(el.panel);
+  hide(el.signinPanel);
+  hide(el.nicknamePanel);
+  hide(el.decksPanel);
+  hide(el.introPanel);
+  hide(el.controls);
+  hide(el.stats);
+  hide(el.hintBox);
+  hide(el.footer);
+  hide(el.deckLine);
+}
+
+// showShelf is the home screen: fetch the catalog and put it on screen.
+//
+// It always refetches rather than reusing what it has. Everything that sends you
+// back here — finishing a round, changing your name, backing out of a deck —
+// changed something the shelf displays, and a stale bar or a deck that should
+// have just unlocked would be the first thing anyone noticed.
+async function showShelf() {
+  hideEverything();
+  state.deck = null;
+  showStatus("Loading your decks…");
+
+  let decks = null;
+  try {
+    const res = await fetch(API.decks(API.lang), { headers: { Accept: "application/json" } });
+    if (res.status === 401) {
+      showSignIn();
+
+      return;
+    }
+    if (!res.ok) throw new Error(`decks failed: ${res.status}`);
+    decks = (await res.json()).decks || [];
+  } catch (err) {
+    console.error(err);
+    showStatus("Couldn't reach the server. Check your connection and try again.");
+
+    return;
+  }
+
+  state.decks = decks;
+  renderShelf();
+
+  hide(el.statusPanel);
+  show(el.decksPanel);
+}
+
+// renderShelf draws one card per deck.
+//
+// A locked deck is drawn in full — title, subtitle, and the bar showing how far
+// through its prerequisite you are. Hiding what comes next would remove the only
+// reason to finish what you are on, so the lock is shown as a distance rather
+// than as a closed door.
+function renderShelf() {
+  el.deckList.replaceChildren();
+
+  for (const deck of state.decks) {
+    el.deckList.appendChild(buildDeckCard(deck));
+  }
+}
+
+function buildDeckCard(deck) {
+  const item = document.createElement("li");
+  item.className = "deck-card";
+
+  const playable = RENDERABLE_DRILLS.has(deck.drill);
+  const open = deck.unlocked && playable;
+  if (!deck.unlocked) item.classList.add("locked");
+  else if (!playable) item.classList.add("soon");
+
+  const title = document.createElement("h3");
+  title.className = "deck-card-title";
+  title.textContent = deck.title;
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "deck-card-subtitle";
+  subtitle.textContent = deck.subtitle;
+
+  item.append(title, subtitle);
+
+  if (deck.unlocked) {
+    // An open deck reports its own progress; the bar is over the deck itself.
+    item.appendChild(progressBar(deck.learned, deck.deck_size));
+
+    const line = document.createElement("p");
+    line.className = "deck-card-stat";
+    line.textContent = deck.learned === 0
+      ? `${deck.deck_size} cards · not started`
+      : `${deck.learned}/${deck.deck_size} seen · ${deck.due_now} due now`;
+    item.appendChild(line);
+  } else {
+    // A locked deck's bar is over the deck that gates it, because that is the
+    // one the learner can actually move.
+    item.appendChild(progressBar(deck.requires_seen, deck.requires_need));
+
+    const line = document.createElement("p");
+    line.className = "deck-card-stat";
+    line.textContent =
+      `Locked — ${deck.requires_seen}/${deck.requires_need} cards of “${deck.requires_title}” seen`;
+    item.appendChild(line);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "deck-card-actions";
+
+  if (open) {
+    const study = document.createElement("button");
+    study.className = "primary deck-card-study";
+    study.type = "button";
+    study.textContent = deck.learned === 0 ? "Start" : "Study";
+    study.addEventListener("click", () => openDeck(deck));
+    actions.appendChild(study);
+  } else if (deck.unlocked && !playable) {
+    const soon = document.createElement("span");
+    soon.className = "deck-card-soon";
+    soon.textContent = "Drill coming soon";
+    actions.appendChild(soon);
+  }
+
+  // The introduction is readable whatever the deck's state. It is the part that
+  // is worth something on its own — a locked deck you have read about is a deck
+  // you have already started learning.
+  const read = document.createElement("button");
+  read.className = "linkish";
+  read.type = "button";
+  read.textContent = "How this deck works";
+  read.addEventListener("click", () => showIntro(deck));
+  actions.appendChild(read);
+
+  item.appendChild(actions);
+
+  return item;
+}
+
+// progressBar renders have/need as a filled track. A need of 0 fills it: there is
+// nothing to do, which is complete rather than empty.
+function progressBar(have, need) {
+  const track = document.createElement("div");
+  track.className = "bar";
+
+  const fill = document.createElement("div");
+  fill.className = "bar-fill";
+  const share = need > 0 ? Math.min(1, have / need) : 1;
+  fill.style.width = `${Math.round(share * 100)}%`;
+
+  track.appendChild(fill);
+
+  return track;
+}
+
+// openDeck is what pressing Start does. The introduction comes first the one time
+// it has not been read, because arriving at a wall of prepositions with no idea
+// what governs them is the situation the introduction exists to prevent.
+function openDeck(deck) {
+  if (deck.intro_seen) {
+    startDeck(deck);
+
+    return;
+  }
+
+  showIntro(deck);
+}
+
+// showIntro puts a deck's introduction on screen. It is reachable from the shelf
+// for any deck and from the header while studying one, so the offer to start is
+// only made when starting is actually possible.
+function showIntro(deck) {
+  hideEverything();
+
+  el.introHeading.textContent = deck.intro.heading;
+
+  el.introBody.replaceChildren();
+  for (const paragraph of deck.intro.body) {
+    const p = document.createElement("p");
+    p.textContent = paragraph;
+    el.introBody.appendChild(p);
+  }
+
+  el.introGroups.replaceChildren();
+  for (const group of deck.intro.groups) {
+    const li = document.createElement("li");
+    li.className = "intro-group";
+    // The group is coloured to match the button it leads to, so the explanation
+    // and the drill look like one thing rather than two.
+    if (group.answer) li.dataset.answer = group.answer;
+
+    const label = document.createElement("p");
+    label.className = "intro-group-label";
+    label.textContent = group.label;
+
+    const members = document.createElement("p");
+    members.className = "intro-group-members";
+    members.lang = "de";
+    members.textContent = group.members;
+
+    const hook = document.createElement("p");
+    hook.className = "intro-group-hook";
+    hook.textContent = group.hook;
+
+    li.append(label, members, hook);
+    el.introGroups.appendChild(li);
+  }
+
+  el.introClosing.textContent = deck.intro.closing;
+
+  const canStart = deck.unlocked && RENDERABLE_DRILLS.has(deck.drill);
+  el.introStartBtn.hidden = !canStart;
+  if (canStart) el.introStartBtn.onclick = () => startDeck(deck);
+
+  show(el.introPanel);
+}
+
+// startDeck opens a deck for study.
+function startDeck(deck) {
+  hideEverything();
+
+  state.deck = deck;
+  el.deckTitle.textContent = deck.title;
+  show(el.deckLine);
+
+  loadSummary();
+  loadBatch();
+}
+
+// leaveDeck goes back to the shelf, sending anything already answered first.
+// Answers live in the browser until a round ends, so leaving mid-round would
+// otherwise throw them away — and the flush is the same request the end of the
+// round would have made anyway.
+async function leaveDeck() {
+  if (state.results.length) {
+    await flush();
+    state.results = [];
+  }
+
+  showShelf();
 }
 
 // --- data ------------------------------------------------------------------
@@ -396,6 +703,8 @@ async function loadBatch() {
   hide(el.panel);
   hide(el.signinPanel);
   hide(el.nicknamePanel);
+  hide(el.decksPanel);
+  hide(el.introPanel);
   // Drop any reveal still in flight, so a timer from the last batch cannot
   // advance an index that now points into a fresh set of cards.
   clearTimers();
@@ -420,6 +729,8 @@ async function loadBatch() {
     hide(el.statusPanel);
     show(el.controls);
     show(el.stats);
+    show(el.hintBox);
+    show(el.footer);
     renderStack();
   } catch (err) {
     showStatus("Couldn't reach the server. Check your connection and try again.");
@@ -713,6 +1024,8 @@ function clearHints() {
 
 async function finishBatch() {
   hide(el.controls);
+  hide(el.hintBox);
+  hide(el.footer);
   clearStack();
   showStatus("Saving…");
   const sum = await flush();
@@ -790,10 +1103,13 @@ function renderMisses() {
 
 function finishEmpty() {
   hide(el.controls);
+  hide(el.hintBox);
+  hide(el.footer);
   clearStack();
   hide(el.statusPanel);
   el.panelTitle.textContent = "All caught up";
-  el.panelBody.textContent = "Nothing is due right now. Come back later, or start another batch.";
+  el.panelBody.textContent =
+    "Nothing is due in this deck right now. Come back later, start another batch, or pick a different deck.";
   hide(el.misses); // nothing was answered, so any list from a previous round is stale.
   show(el.panel);
 }
@@ -811,46 +1127,82 @@ function escapeHtml(s) {
   ));
 }
 
-// Keyboard: ← der, ↑ das, → die.
-document.addEventListener("keydown", (e) => {
-  const map = { ArrowLeft: "der", ArrowUp: "das", ArrowRight: "die" };
-  const article = map[e.key];
-  if (article) {
-    e.preventDefault();
-    answer(article);
-  }
-});
+// wire binds every listener and is the last thing that runs.
+//
+// It is a function rather than statements at the end of the file so that
+// recoverIfStale can be consulted first. Half of what it reaches for does not
+// exist on a page from a previous release, and `null.addEventListener` would
+// throw here — before start() ever ran, so the recovery would never get its
+// chance. Nothing below may assume more than the check above verified.
+function wire() {
+  // Keyboard: ← der, ↑ das, → die. Only while a deck is open — otherwise an arrow
+  // key pressed on the shelf or in the introduction would grade a card that is not
+  // on screen.
+  document.addEventListener("keydown", (e) => {
+    if (!state.deck) return;
 
-// Tap buttons.
-el.controls.addEventListener("click", (e) => {
-  const btn = e.target.closest(".choice");
-  if (btn) answer(btn.dataset.article);
-});
+    const map = { ArrowLeft: "der", ArrowUp: "das", ArrowRight: "die" };
+    const article = map[e.key];
+    if (article) {
+      e.preventDefault();
+      answer(article);
+    }
+  });
 
-el.againBtn.addEventListener("click", loadBatch);
+  // Tap buttons.
+  el.controls.addEventListener("click", (e) => {
+    const btn = e.target.closest(".choice");
+    if (btn) answer(btn.dataset.article);
+  });
 
-el.signinForm.addEventListener("submit", requestLink);
+  el.againBtn.addEventListener("click", loadBatch);
+  el.panelDecksBtn.addEventListener("click", leaveDeck);
 
-el.nicknameForm.addEventListener("submit", submitNickname);
-el.nicknameSkipBtn.addEventListener("click", skipNickname);
-el.renameBtn.addEventListener("click", openRename);
-// Cancelling starts a fresh batch rather than restoring the old one: the stack
-// was cleared to show the panel, and the answers it held were already sent.
-el.nicknameCancelBtn.addEventListener("click", () => {
-  hide(el.nicknamePanel);
-  loadSummary();
-  loadBatch();
-});
+  // The way back to the shelf, from the header while studying and from the intro.
+  el.decksBtn.addEventListener("click", leaveDeck);
+  el.introBackBtn.addEventListener("click", leaveDeck);
 
-el.signoutBtn.addEventListener("click", async () => {
-  try {
-    await fetch(API.logout, { method: "POST" });
-  } catch (err) {
-    console.error(err);
-  }
-  // Reload rather than patching state: the whole page is now signed out, and a
-  // fresh start() is the one path that decides what to show.
-  location.assign("/");
-});
+  // Rereading the introduction mid-deck. Like renaming, it clears the stack, so
+  // any answers held in the browser are sent before they can be lost.
+  el.rereadBtn.addEventListener("click", async () => {
+    const deck = state.deck;
+    if (!deck) return;
 
-start();
+    if (state.results.length) {
+      await flush();
+      state.results = [];
+    }
+
+    showIntro(deck);
+  });
+
+  el.signinForm.addEventListener("submit", requestLink);
+
+  el.nicknameForm.addEventListener("submit", submitNickname);
+  el.nicknameSkipBtn.addEventListener("click", skipNickname);
+  el.renameBtn.addEventListener("click", openRename);
+  // Cancelling returns to the shelf rather than restoring the round: the stack was
+  // cleared to show the panel, and the answers it held were already sent.
+  el.nicknameCancelBtn.addEventListener("click", () => {
+    hide(el.nicknamePanel);
+    showShelf();
+  });
+
+  el.signoutBtn.addEventListener("click", async () => {
+    try {
+      await fetch(API.logout, { method: "POST" });
+    } catch (err) {
+      console.error(err);
+    }
+    // Reload rather than patching state: the whole page is now signed out, and a
+    // fresh start() is the one path that decides what to show.
+    location.assign("/");
+  });
+}
+
+// The entry point. The stale-page check comes before everything, because on a
+// cached page from an earlier release there is nothing here worth attempting.
+if (!recoverIfStale()) {
+  wire();
+  start();
+}

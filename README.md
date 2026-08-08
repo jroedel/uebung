@@ -4,13 +4,18 @@ A spaced-repetition trainer for German grammatical gender — **der / die / das*
 drilled on the nouns that turn up most often in film and television subtitles.
 Runs at [uebung.club](https://uebung.club).
 
-Module 1 is the German gender deck: the ~200 highest-frequency subtitle nouns,
-each scheduled with **FSRS** (the Free Spaced Repetition Scheduler) so you review
-each noun exactly as often as your memory of it needs. The browser client is a
-swipe game — flick a card left for *der*, up for *das*, right for *die* — and
-because a whole batch is preloaded with its answers, every swipe is graded
-instantly with no network round-trip. More languages and more modules are meant
-to slot in behind the same machinery later.
+The first deck is German gender: the ~200 highest-frequency subtitle nouns, each
+scheduled with **FSRS** (the Free Spaced Repetition Scheduler) so you review each
+noun exactly as often as your memory of it needs. The browser client is a swipe
+game — flick a card left for *der*, up for *das*, right for *die* — and because a
+whole batch is preloaded with its answers, every swipe is graded instantly with no
+network round-trip.
+
+Behind it sits a **course**: an ordered shelf of decks, each with an introduction
+explaining the pattern behind its material, and each unlocked by working through
+the one before it. Two more are written — which case a preposition takes, and
+which case a verb takes — and appear on the shelf with their introductions
+readable now; their drill is still to come.
 
 ## Quick start
 
@@ -164,6 +169,43 @@ It refuses unless the account exists and has followed a link, which is what
 proves the address is yours. A card the account has already studied keeps its own
 newer scheduling rather than being overwritten.
 
+The review log moves in full, including the reviews of any card left behind by
+that rule. Those are still things the same person did — the claim is a statement
+that the anonymous deck was always theirs — and the log is a history rather than a
+key, so nothing collides.
+
+## Decks, introductions and unlocking
+
+`GET /api/decks?lang=de` is the shelf: every deck in the course, in order, each
+with its title, its drill, the learner's progress in it, whether it is open, and
+its whole introduction. One request builds the picker.
+
+An **introduction** is the deck's orienting explanation — the pattern behind the
+material rather than a rule to memorise — shown before the first session and
+readable again at any time from the header. It is authored, structured data
+(heading, body, colour-coded groups, a closing line for when you are stuck), not
+prose in a template, so a deck cannot ship without one and a group cannot promise
+to explain an answer the deck never asks for: both fail at start-up.
+
+A deck **unlocks** when four fifths of the deck before it has been seen. The
+measure is deliberately coverage — cards answered at least once — and not
+retention, because coverage only ever goes up. A gate built on how well you
+currently remember things would re-lock a deck the day you lapsed a few cards in
+the one before it, which is the worst thing an unlock rule can do. The honest
+reading is "you have worked through enough of the previous deck to be ready for
+this one", and the fraction is `-unlock-fraction` rather than a constant anyone
+has to believe in.
+
+Nothing about unlocking is stored. It is derived from study records on every
+request, so there is no unlock state that can drift out of step with the course
+when a deck is added, reordered, or regated.
+
+The client decides for itself which drills it can render, from the `drill` field.
+A deck whose drill this build does not know still appears with its introduction —
+that writing is worth reading before the drill exists — but cannot be started.
+Whether a browser can draw a deck is a fact about the browser, so the server never
+sends a "playable" flag it would be guessing at.
+
 ## How a session works
 
 1. The browser asks `GET /api/batch?lang=de` once and receives an ordered set of
@@ -187,10 +229,18 @@ is appended for reference, "(der Mann)", and is composed at display time from
 the card's own article and lemma, so it can never disagree with the gender the
 deck teaches.
 
+`/api/batch`, `/api/grade` and `/api/summary` still name no deck: they answer for
+the noun deck, which is the only one with a drill. The scheduler underneath is
+already deck-aware, so the deck is named once in `app/studyapp` and the wire
+format is unchanged; a `deck` parameter arrives with the second drill, not before
+it, so it never has to lie about a deck that cannot be answered.
+
 `GET /api/summary?lang=de` reports deck size, nouns seen, and reviews due now.
-`GET /healthz` reports whether the app can serve: with a store check wired it
-touches the database, so a probe fails rather than returning 200 while every
-study request errors.
+`GET /healthz` reports whether the app can serve, not whether it is listening. It
+selects the app's real column lists from both study tables, deliberately rather
+than pinging: a ping proves a connection is alive and reads nothing, so it answers
+200 against a schema the binary cannot use — which is the state a rolled-back
+deploy leaves behind, and the one case where a wrong health check costs the most.
 
 ### Installing it on a phone
 
@@ -209,25 +259,34 @@ through a named converter.
 
 ```
 cmd/uebung                     wires the layers, runs the HTTP server
-app/studyapp                   HTTP handlers; the only layer that knows both domains
-  static/                      embedded swipe client (index.html, app.js, styles.css)
+app/studyapp                   HTTP handlers; the only layer that knows every domain
+  static/                      embedded client (index.html, app.js, styles.css)
+business/domain/curriculum     the course (which decks exist, in what order, gated how)
+  curriculumbus, stores/seeddb embedded catalog + introductions; the unlock rule
 business/domain/vocab          the noun deck (what the genders are)
   vocabbus, stores/seeddb      embedded curated JSON deck
 business/domain/study          scheduling (when to show each card)
-  studybus                     FSRS-driven selection + grading, over opaque lemmas
+  studybus                     FSRS-driven selection + grading, over opaque deck items
   stores/sqlitedb, memdb       SQLite persistence; in-memory for tests
-business/types                 strong types: article, rating, cardstate, userid, langcode
+business/types                 strong types: article, rating, cardstate, userid,
+                               langcode, deckid, drillkind, roleanswer
 foundation/fsrs                self-contained FSRS-5 scheduler
 foundation/errs                field-error accumulation for converters
 ```
 
-Two deliberate boundaries make future modules cheap:
+Three deliberate boundaries make future modules cheap:
 
-- **study never imports vocab.** The scheduler works on opaque lemma strings; the
-  App layer pairs a scheduled lemma back with its noun. A new deck (plurals, a
-  second language) is new data behind the same scheduler.
+- **study never imports vocab.** The scheduler works on opaque item strings scoped
+  by a `deckid.DeckID`; the App layer pairs a scheduled item back with its noun. A
+  new deck (prepositions, a second language) is new data behind the same
+  scheduler, and the deck in the key is what stops two decks that happen to share
+  an item key — "mit" as a preposition, "mit" as anything else — from colliding.
 - **the scheduler is foundation.** `foundation/fsrs` is pure arithmetic and knows
   nothing about German; the study domain converts to and from it at one seam.
+- **curriculum knows nothing about a learner.** It states the course and the
+  unlock rule and holds no progress: a learner's standing arrives as a value the
+  App assembles from the study domain. That is what makes the rule testable
+  without a database and changeable without a migration.
 
 ### Multi-user readiness
 
@@ -244,7 +303,28 @@ Persistence sits behind `studybus.Storer`, and the shipping implementation is
 `sqlitedb`. The driver is `modernc.org/sqlite` — pure Go, so there is no CGO and
 no C toolchain in the build and `CGO_ENABLED=0` cross-compiles still work. A
 review writes one row rather than rewriting a whole document, and the
-`(user, lang, lemma)` key is enforced by the database.
+`(user, lang, deck, item)` key is enforced by the database.
+
+There are two tables, and the difference between them is the point:
+
+- **`study_progress`** is where each card stands *now* — one row per card,
+  overwritten by every review.
+- **`study_review`** is what *happened* — one row per graded answer, appended and
+  never updated. Points, streaks, daily counts and a leaderboard are all questions
+  about *when* someone studied, and `study_progress` cannot answer any of them: it
+  holds one timestamp, the most recent. Keeping the events rather than a running
+  score also means the scoring formula can change later without orphaning the
+  history, which a counter column could never offer.
+
+A grade writes to both in one transaction, which is why `Storer.Save` takes the
+card and its review together: a crash must not be able to leave a card advanced
+with no record of the answer that advanced it.
+
+A database written before decks existed is migrated on `Open`. SQLite cannot add a
+column to a primary key in place, so this is the documented rebuild — create,
+copy, drop, rename — in a single transaction, and every existing row lands in
+`der-die-das`, the deck it was always implicitly in. The check is the absence of a
+`deck` column, so re-running it is a no-op and a fresh database never touches it.
 
 One schema note: the two timestamps are stored as `RFC3339Nano` **text** in UTC,
 not as integers, so a row is readable in a `sqlite3` shell and an unreviewed
