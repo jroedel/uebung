@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -23,26 +24,28 @@ import (
 
 	"github.com/jroedel/uebung/business/domain/curriculum/curriculumbus"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
+	"github.com/jroedel/uebung/business/domain/trigger/triggerbus"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
 	"github.com/jroedel/uebung/business/types/deckid"
+	"github.com/jroedel/uebung/business/types/drillkind"
 	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/roleanswer"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/errs"
 )
 
-// nounDeck is the deck every request handled here studies.
+// defaultDeck is the deck a request means when it names none.
 //
-// The API does not name a deck yet: a client asks for a language and gets the
-// German gender deck, because it is the only one that exists. The scheduler
-// underneath is already deck-aware, so naming the deck here — once, in the layer
-// that composes domains — is what keeps that true while the wire format stays
-// exactly as it was. Adding a deck parameter later is a change to this file.
-var nounDeck = deckid.DerDieDas
+// Every request made before the course had more than one deck omits the deck
+// parameter, and every one of them meant the gender deck. Defaulting here rather
+// than requiring the field is what lets a browser holding a cached client keep
+// studying across the release that introduced the parameter.
+var defaultDeck = deckid.DerDieDas
 
 // Config wires an App together from its Business domains and its policy.
 type Config struct {
 	Vocab      *vocabbus.Business
+	Trigger    *triggerbus.Business
 	Study      *studybus.Business
 	Curriculum *curriculumbus.Business
 	BatchLimit int              // cards per preloaded batch; defaults to 20.
@@ -71,6 +74,7 @@ type Config struct {
 // App holds the wired dependencies and serves HTTP.
 type App struct {
 	vocab      *vocabbus.Business
+	trigger    *triggerbus.Business
 	study      *studybus.Business
 	curriculum *curriculumbus.Business
 	batchLimit int
@@ -114,6 +118,7 @@ func New(cfg Config) *App {
 
 	return &App{
 		vocab:      cfg.Vocab,
+		trigger:    cfg.Trigger,
 		study:      cfg.Study,
 		curriculum: cfg.Curriculum,
 		etags:      assetETags(cfg.Static),
@@ -340,6 +345,7 @@ func (a *App) handleDecks(w http.ResponseWriter, r *http.Request) {
 		size     int
 		learned  int
 		dueNow   int
+		nextDue  string
 		coverage curriculumbus.Coverage
 	}
 
@@ -370,6 +376,7 @@ func (a *App) handleDecks(w http.ResponseWriter, r *http.Request) {
 			size:     size,
 			learned:  len(progress),
 			dueNow:   dueNow,
+			nextDue:  formatDue(earliestDue(progress, now)),
 			coverage: curriculumbus.Coverage{Size: size, Seen: len(progress)},
 		}
 		titles[d.ID] = d.Title
@@ -379,7 +386,7 @@ func (a *App) handleDecks(w http.ResponseWriter, r *http.Request) {
 	for _, d := range decks {
 		s := standings[d.ID]
 		gate := a.curriculum.Gate(d, standings[d.Prerequisite].coverage)
-		out = append(out, fromBusDeckResponse(d, gate, titles[d.Prerequisite], s.size, s.learned, s.dueNow))
+		out = append(out, fromBusDeckResponse(d, gate, titles[d.Prerequisite], s.size, s.learned, s.dueNow, s.nextDue))
 	}
 
 	writeJSON(w, http.StatusOK, catalogResponse{Lang: lang.String(), Decks: out})
@@ -405,48 +412,187 @@ func (a *App) deckSize(ctx context.Context, d curriculumbus.Deck) (int, error) {
 	return len(nouns), nil
 }
 
-// handleBatch preloads a study session: the ordered, ready-to-swipe cards for a
-// language, each carrying its correct article so the client can grade locally.
+// handleBatch preloads a study session: the ordered, ready-to-swipe cards for one
+// deck, each carrying its correct answer so the client can grade locally.
 func (a *App) handleBatch(w http.ResponseWriter, r *http.Request) {
-	lang, err := toBusLang(r.URL.Query().Get("lang"))
+	q := r.URL.Query()
+
+	lang, err := toBusLang(q.Get("lang"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	deckID, err := toBusDeck(q.Get("deck"))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 
 	ctx := r.Context()
-	deck, err := a.vocab.Deck(ctx, lang)
-	if err != nil {
-		writeServerError(w, err)
-		return
-	}
-
-	byLemma := make(map[string]vocabbus.Noun, len(deck))
-	lemmas := make([]string, len(deck))
-	for i, n := range deck {
-		byLemma[n.Lemma] = n
-		lemmas[i] = n.Lemma
-	}
 
 	user, ok := a.requireUser(w, r)
 	if !ok {
 		return
 	}
 
-	chosen, err := a.study.Batch(ctx, user, lang, nounDeck, lemmas, a.now(), a.batchLimit)
+	if a.curriculum == nil {
+		writeServerError(w, errors.New("studyapp: no curriculum wired"))
+		return
+	}
+
+	d, err := a.curriculum.Deck(ctx, lang, deckID)
+	if err != nil {
+		// An unknown deck is the caller naming something that is not in the
+		// course, which is their mistake to fix rather than ours to log.
+		writeError(w, fmt.Errorf("unknown deck %q", deckID))
+		return
+	}
+
+	// The gate is enforced here, not merely drawn in the client. A lock that lives
+	// only in the browser is a suggestion: the shelf would grey the deck out while
+	// this endpoint served its cards to anyone who typed the id into the URL, and
+	// the progress they built would then unlock the deck for real.
+	gate, err := a.gateFor(ctx, user, lang, d)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+
+	if !gate.Met {
+		writeLocked(w, gate)
+		return
+	}
+
+	items, cardByItem, err := a.deckCards(ctx, d)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+
+	// One clock reading for the whole request: selecting the batch against one
+	// instant and reporting the next due time against a later one could describe
+	// a card as both not-yet-due and already-returned.
+	now := a.now()
+
+	chosen, err := a.study.Batch(ctx, user, lang, d.ID, items, now, a.batchLimit)
 	if err != nil {
 		writeServerError(w, err)
 		return
 	}
 
 	cards := make([]batchCardResponse, 0, len(chosen))
-	for _, lemma := range chosen {
-		if n, ok := byLemma[lemma]; ok {
-			cards = append(cards, fromBusNounResponse(n))
+	for _, item := range chosen {
+		if c, ok := cardByItem[item]; ok {
+			cards = append(cards, c)
 		}
 	}
 
-	writeJSON(w, http.StatusOK, batchResponse{Lang: lang.String(), Cards: cards})
+	resp := batchResponse{Lang: lang.String(), Deck: d.ID.String(), Cards: cards}
+
+	// An empty batch is the only answer that leaves the learner with nothing to
+	// do, so it is the only one that has to say when that changes. Reading their
+	// progress a second time is the price, and it is paid on the rare path.
+	if len(cards) == 0 {
+		progress, err := a.study.Progress(ctx, user, lang, d.ID)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+
+		resp.NextDue = formatDue(earliestDue(progress, now))
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// deckCards loads a deck's material and returns it twice over: the item keys in
+// deck order, which is what the scheduler selects from, and a lookup from key to
+// the wire card, which is what pairs a selection back with what to show.
+//
+// The switch on drill is where the App layer earns its keep. studybus schedules
+// opaque keys and vocab and trigger each know one kind of card; only this layer
+// knows that an article-3way deck is answered from one domain and a case-3way deck
+// from another, and it is the only place that has to learn a third.
+func (a *App) deckCards(ctx context.Context, d curriculumbus.Deck) ([]string, map[string]batchCardResponse, error) {
+	switch d.Drill {
+	case drillkind.ArticleThreeWay:
+		nouns, err := a.vocab.Deck(ctx, d.Lang)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		items := make([]string, len(nouns))
+		cards := make(map[string]batchCardResponse, len(nouns))
+		for i, n := range nouns {
+			items[i] = n.Lemma
+			cards[n.Lemma] = fromBusNounResponse(n)
+		}
+
+		return items, cards, nil
+
+	case drillkind.CaseThreeWay:
+		if a.trigger == nil {
+			return nil, nil, errors.New("studyapp: no trigger domain wired")
+		}
+
+		triggers, err := a.trigger.Deck(ctx, d.Lang, d.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		items := make([]string, len(triggers))
+		cards := make(map[string]batchCardResponse, len(triggers))
+		for i, t := range triggers {
+			items[i] = t.Word
+			cards[t.Word] = fromBusTriggerResponse(t)
+		}
+
+		return items, cards, nil
+
+	default:
+		return nil, nil, fmt.Errorf("studyapp: deck %q has drill %q, which nothing here can serve", d.ID, d.Drill)
+	}
+}
+
+// gateFor decides whether a deck is open to a learner, assembling the prerequisite
+// coverage the curriculum needs from the study domain.
+//
+// A deck with no prerequisite is asked with the zero Coverage, which is what the
+// curriculum expects for an ungated deck.
+func (a *App) gateFor(ctx context.Context, user userid.UserID, lang langcode.LangCode, d curriculumbus.Deck) (curriculumbus.Gate, error) {
+	if d.Prerequisite.IsZero() {
+		return a.curriculum.Gate(d, curriculumbus.Coverage{}), nil
+	}
+
+	prereq, err := a.curriculum.Deck(ctx, lang, d.Prerequisite)
+	if err != nil {
+		return curriculumbus.Gate{}, err
+	}
+
+	size, err := a.deckSize(ctx, prereq)
+	if err != nil {
+		return curriculumbus.Gate{}, err
+	}
+
+	progress, err := a.study.Progress(ctx, user, lang, prereq.ID)
+	if err != nil {
+		return curriculumbus.Gate{}, err
+	}
+
+	return a.curriculum.Gate(d, curriculumbus.Coverage{Size: size, Seen: len(progress)}), nil
+}
+
+// writeLocked refuses a deck the learner has not reached, and says what it is
+// waiting for. The numbers are the same ones the shelf draws its bar from, so a
+// client that somehow got here can explain itself rather than showing a bare 403.
+func writeLocked(w http.ResponseWriter, g curriculumbus.Gate) {
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"error":         "deck locked",
+		"requires":      g.Requires.String(),
+		"requires_seen": g.Seen,
+		"requires_need": g.Need,
+	})
 }
 
 // handleGrade applies a batched flush of graded cards and returns the deck's
@@ -459,7 +605,7 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lang, results, err := toBusGradeRequest(req)
+	lang, deckID, results, err := toBusGradeRequest(req)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -471,20 +617,47 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if a.curriculum == nil {
+		writeServerError(w, errors.New("studyapp: no curriculum wired"))
+		return
+	}
+
+	d, err := a.curriculum.Deck(ctx, lang, deckID)
+	if err != nil {
+		writeError(w, fmt.Errorf("unknown deck %q", deckID))
+		return
+	}
+
+	// Grading is gated for the same reason batching is, and it matters more here:
+	// a batch of a locked deck only leaks its cards, but a grade *writes* progress,
+	// and progress in a locked deck is what its own successor unlocks on. Refusing
+	// only the batch would leave the whole gate walkable by anyone posting grades
+	// directly.
+	gate, err := a.gateFor(ctx, user, lang, d)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+
+	if !gate.Met {
+		writeLocked(w, gate)
+		return
+	}
+
 	now := a.now()
 
 	applied := 0
 	for _, res := range results {
-		// roleanswer.None: this deck asks for an article and nothing else. The
-		// two-part cards that have a role half live in a deck that does not exist yet.
-		if _, err := a.study.Grade(ctx, user, lang, nounDeck, res.lemma, res.rating, roleanswer.None, now); err != nil {
+		// roleanswer.None: no deck in the course asks for a participant role yet.
+		// The two-part cards that have a role half are still to be written.
+		if _, err := a.study.Grade(ctx, user, lang, d.ID, res.item, res.rating, roleanswer.None, now); err != nil {
 			writeServerError(w, err)
 			return
 		}
 		applied++
 	}
 
-	sum, err := a.computeSummary(ctx, user, lang)
+	sum, err := a.computeSummary(ctx, user, lang, d)
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -495,23 +668,49 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 		DueNow:   sum.DueNow,
 		Learned:  sum.Learned,
 		DeckSize: sum.DeckSize,
+		NextDue:  sum.NextDue,
 	})
 }
 
-// handleSummary reports deck size and the learner's progress for a language.
+// handleSummary reports deck size and the learner's progress in one deck.
 func (a *App) handleSummary(w http.ResponseWriter, r *http.Request) {
-	lang, err := toBusLang(r.URL.Query().Get("lang"))
+	q := r.URL.Query()
+
+	lang, err := toBusLang(q.Get("lang"))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+
+	deckID, err := toBusDeck(q.Get("deck"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	ctx := r.Context()
 
 	user, ok := a.requireUser(w, r)
 	if !ok {
 		return
 	}
 
-	sum, err := a.computeSummary(r.Context(), user, lang)
+	if a.curriculum == nil {
+		writeServerError(w, errors.New("studyapp: no curriculum wired"))
+		return
+	}
+
+	d, err := a.curriculum.Deck(ctx, lang, deckID)
+	if err != nil {
+		writeError(w, fmt.Errorf("unknown deck %q", deckID))
+		return
+	}
+
+	// Deliberately ungated. A summary is a statement about the learner's own
+	// progress, which in a locked deck is zero — refusing to say so would tell a
+	// client nothing it could not already infer, while costing the shelf a way to
+	// ask about a deck before it opens.
+	sum, err := a.computeSummary(ctx, user, lang, d)
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -523,13 +722,13 @@ func (a *App) handleSummary(w http.ResponseWriter, r *http.Request) {
 // computeSummary tallies deck size, cards ever learned, and cards due right now.
 // It is shared by the grade flush and the summary endpoint so both report the
 // same numbers.
-func (a *App) computeSummary(ctx context.Context, user userid.UserID, lang langcode.LangCode) (summaryResponse, error) {
-	deck, err := a.vocab.Deck(ctx, lang)
+func (a *App) computeSummary(ctx context.Context, user userid.UserID, lang langcode.LangCode, d curriculumbus.Deck) (summaryResponse, error) {
+	size, err := a.deckSize(ctx, d)
 	if err != nil {
 		return summaryResponse{}, err
 	}
 
-	progress, err := a.study.Progress(ctx, user, lang, nounDeck)
+	progress, err := a.study.Progress(ctx, user, lang, d.ID)
 	if err != nil {
 		return summaryResponse{}, err
 	}
@@ -544,10 +743,51 @@ func (a *App) computeSummary(ctx context.Context, user userid.UserID, lang langc
 
 	return summaryResponse{
 		Lang:     lang.String(),
-		DeckSize: len(deck),
+		Deck:     d.ID.String(),
+		DeckSize: size,
 		Learned:  len(progress),
 		DueNow:   dueNow,
+		NextDue:  formatDue(earliestDue(progress, now)),
 	}, nil
+}
+
+// earliestDue reports when the soonest-scheduled card in a deck comes back, or
+// the zero time when nothing is waiting.
+//
+// Two kinds of card are skipped, for the same reason. A new card has never been
+// reviewed, and a card already due is ready now: neither is *scheduled*, both are
+// available, and reporting either as a "next review" would name a future moment
+// for something the learner could be doing this second. What is left is exactly
+// the set that makes a deck temporarily empty, which is the question being asked.
+func earliestDue(progress []studybus.Progress, now time.Time) time.Time {
+	var soonest time.Time
+
+	for _, p := range progress {
+		if p.IsNew() || !p.Due.After(now) {
+			continue
+		}
+
+		if soonest.IsZero() || p.Due.Before(soonest) {
+			soonest = p.Due
+		}
+	}
+
+	return soonest
+}
+
+// formatDue flattens a scheduling instant for the wire.
+//
+// The zero time becomes the empty string rather than year 1, so that `omitempty`
+// drops the field entirely and a client reading it can treat "absent" as "nothing
+// is scheduled" instead of having to recognise a sentinel date. UTC because an
+// instant on the wire should carry no opinion about where it will be read; the
+// client renders it in the learner's own timezone, which the server cannot know.
+func formatDue(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+
+	return t.UTC().Format(time.RFC3339)
 }
 
 // --- HTTP plumbing ---------------------------------------------------------

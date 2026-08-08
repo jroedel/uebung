@@ -34,6 +34,8 @@ import (
 	identitydb "github.com/jroedel/uebung/business/domain/identity/stores/sqlitedb"
 	studydb "github.com/jroedel/uebung/business/domain/study/stores/sqlitedb"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
+	triggerseed "github.com/jroedel/uebung/business/domain/trigger/stores/seeddb"
+	"github.com/jroedel/uebung/business/domain/trigger/triggerbus"
 	vocabseed "github.com/jroedel/uebung/business/domain/vocab/stores/seeddb"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
 	"github.com/jroedel/uebung/business/types/langcode"
@@ -101,6 +103,7 @@ func run() error {
 
 	// Business.
 	vocab := vocabbus.NewBusiness(vocabseed.New())
+	trigger := triggerbus.NewBusiness(triggerseed.New())
 
 	// The catalog is validated as it loads, so a deck whose prerequisite does not
 	// exist, or whose introduction explains an answer the deck never asks for,
@@ -175,6 +178,7 @@ func run() error {
 
 	app := studyapp.New(studyapp.Config{
 		Vocab:      vocab,
+		Trigger:    trigger,
 		Study:      study,
 		Curriculum: curriculum,
 		BatchLimit: *batchLimit,

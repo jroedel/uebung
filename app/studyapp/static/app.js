@@ -13,9 +13,11 @@ const API = {
   lang: "de",
   limit: 20,
   decks: (lang) => `/api/decks?lang=${encodeURIComponent(lang)}`,
-  batch: (lang, limit) => `/api/batch?lang=${encodeURIComponent(lang)}&limit=${limit}`,
+  batch: (lang, limit, deck) =>
+    `/api/batch?lang=${encodeURIComponent(lang)}&limit=${limit}&deck=${encodeURIComponent(deck)}`,
   grade: "/api/grade",
-  summary: (lang) => `/api/summary?lang=${encodeURIComponent(lang)}`,
+  summary: (lang, deck) =>
+    `/api/summary?lang=${encodeURIComponent(lang)}&deck=${encodeURIComponent(deck)}`,
   me: "/auth/me",
   requestLink: "/auth/request",
   logout: "/auth/logout",
@@ -23,20 +25,84 @@ const API = {
   skipNickname: "/auth/nickname/skip",
 };
 
-// The drills this client knows how to put on screen.
+// The drills this client knows how to put on screen, and how to draw each one.
 //
 // The server describes a deck's drill and says nothing about whether a browser
 // can render it, which is the right division: a deck's shape is a fact about the
 // deck, and what this file can draw is a fact about this file. A deck whose drill
 // is not in here still appears on the shelf with its introduction — the writing is
 // worth reading before the drill exists — but it cannot be started.
-const RENDERABLE_DRILLS = new Set(["article-3way"]);
+//
+// Both drills are the same three-way swipe, and the direction each answer sits in
+// is chosen the same way: the two horizontal swipes are the easy gesture, so they
+// carry the two commonest answers, and the vertical flick takes the rarest. For
+// gender that puts das up; for case it puts the genitive up, which is by some
+// distance the least common of the three a trigger can govern.
+//
+// The colour slot each answer borrows is deliberately shared with its direction —
+// left is always the "der" colour, up the "das" colour, right the "die" colour —
+// so the two drills look like one app, and so the introduction's colour-coded
+// groups (see styles.css) line up with the buttons they describe.
+const DRILLS = {
+  // `short` is what the drop-zone hints say. The left and right hints live in the
+  // narrow gutter beside the card, which fits "der" and not "Akkusativ" — the full
+  // word ends up drawn over by the card. They are peripheral cues read out of the
+  // corner of the eye, so an abbreviation loses nothing, and the buttons below
+  // still carry the full name.
+  "article-3way": {
+    prompt: "der, die, or das?",
+    answers: [
+      { answer: "der", dir: "left",  label: "der", short: "der", slot: "der" },
+      { answer: "das", dir: "up",    label: "das", short: "das", slot: "das" },
+      { answer: "die", dir: "right", label: "die", short: "die", slot: "die" },
+    ],
+  },
+  "case-3way": {
+    prompt: "which case?",
+    answers: [
+      { answer: "akkusativ", dir: "left",  label: "Akkusativ", short: "akk", slot: "der" },
+      { answer: "genitiv",   dir: "up",    label: "Genitiv",   short: "gen", slot: "das" },
+      { answer: "dativ",     dir: "right", label: "Dativ",     short: "dat", slot: "die" },
+    ],
+  },
+};
 
-// Direction → article. Left = der, Up = das, Right = die. Chosen so the two
-// horizontal swipes (the most common gesture) cover the two most frequent
-// genders, with the vertical flick for neuter.
-const DIR = { der: "left", das: "up", die: "right" };
+const RENDERABLE_DRILLS = new Set(Object.keys(DRILLS));
+
+// The swipe legend under each button, by direction.
+const DIR_HINT = { left: "◀ swipe left", up: "▲ swipe up", right: "swipe right ▶" };
+
 const SWIPE_THRESHOLD = 80; // px of travel before a drag counts as a swipe.
+
+// drill returns the active deck's drill definition. Every render and every answer
+// goes through it rather than through a hard-coded set of three articles.
+function drill() {
+  return (state.deck && DRILLS[state.deck.drill]) || DRILLS["article-3way"];
+}
+
+// dirFor maps an answer to the direction it flies in, and answerForDir back again.
+function dirFor(answer) {
+  const spec = drill().answers.find((a) => a.answer === answer);
+  return spec ? spec.dir : null;
+}
+
+function answerForDir(dir) {
+  const spec = drill().answers.find((a) => a.dir === dir);
+  return spec ? spec.answer : null;
+}
+
+// slotFor is the colour class an answer wears — see DRILLS.
+function slotFor(answer) {
+  const spec = drill().answers.find((a) => a.answer === answer);
+  return spec ? spec.slot : "";
+}
+
+// labelFor is how an answer is written on screen: "der" stays lowercase because
+// that is how an article is written, while a case is a name and takes a capital.
+function labelFor(answer) {
+  const spec = drill().answers.find((a) => a.answer === answer);
+  return spec ? spec.label : answer;
+}
 
 // Answer-speed thresholds (ms) that turn a correct answer into an FSRS grade.
 // A miss is always "again"; a hit is graded by how quickly it came, which is a
@@ -124,9 +190,9 @@ const el = {
 const state = {
   decks: [],     // the shelf, as /api/decks describes it
   deck: null,    // the deck being studied, or null on the shelf
-  cards: [],     // {lemma, article, gloss, example, example_en}
+  cards: [],     // {item, answer, gloss, example, example_en, phrase?, note?}
   index: 0,      // current card
-  results: [],   // {lemma, rating}
+  results: [],   // {item, rating}
   shownAt: 0,    // when the current card was first shown
   locked: false, // true while an answer animates, to swallow double input
   advance: null, // while a reveal is on screen: run it early to skip the rest
@@ -480,6 +546,7 @@ function hideEverything() {
 async function showShelf() {
   hideEverything();
   state.deck = null;
+  delete document.body.dataset.drill;
   showStatus("Loading your decks…");
 
   let decks = null;
@@ -545,9 +612,21 @@ function buildDeckCard(deck) {
 
     const line = document.createElement("p");
     line.className = "deck-card-stat";
-    line.textContent = deck.learned === 0
-      ? `${deck.deck_size} cards · not started`
-      : `${deck.learned}/${deck.deck_size} seen · ${deck.due_now} due now`;
+
+    // Default to the working state, and override the two that read wrongly without
+    // it: an untouched deck has no progress to report, and a deck with nothing due
+    // says "0 due now" — which looks like a deck that has run out rather than one
+    // resting between reviews. When we know the moment it reopens, say that instead.
+    let stat = `${deck.learned}/${deck.deck_size} seen · ${deck.due_now} due now`;
+    const reopens = deck.due_now === 0 ? describeDue(deck.next_due) : "";
+
+    if (deck.learned === 0) {
+      stat = `${deck.deck_size} cards · not started`;
+    } else if (reopens) {
+      stat = `${deck.learned}/${deck.deck_size} seen · next review ${reopens}`;
+    }
+
+    line.textContent = stat;
     item.appendChild(line);
   } else {
     // A locked deck's bar is over the deck that gates it, because that is the
@@ -676,6 +755,13 @@ function startDeck(deck) {
   hideEverything();
 
   state.deck = deck;
+
+  // The drill is put on the body so the stylesheet can size for it. A case deck
+  // answers with words rather than three-letter articles, and asks with whole
+  // constructions rather than single nouns, so type that fits "der" does not fit
+  // "Akkusativ" — and that is a question for the stylesheet, not for this file.
+  document.body.dataset.drill = deck.drill;
+
   el.deckTitle.textContent = deck.title;
   show(el.deckLine);
 
@@ -711,10 +797,17 @@ async function loadBatch() {
   state.advance = null;
   state.locked = false;
   try {
-    const res = await fetch(API.batch(API.lang, API.limit), { headers: { Accept: "application/json" } });
+    const res = await fetch(API.batch(API.lang, API.limit, deckID()), { headers: { Accept: "application/json" } });
     if (res.status === 401) {
       showSignIn();
 
+      return;
+    }
+    // The gate is the server's to enforce, so it can refuse a deck the shelf
+    // thought was open — a stale shelf, or a deck opened in another tab and since
+    // re-locked. Say what it is waiting for rather than showing a generic failure.
+    if (res.status === 403) {
+      finishLocked(await res.json().catch(() => null));
       return;
     }
     if (!res.ok) throw new Error(`batch failed: ${res.status}`);
@@ -723,9 +816,10 @@ async function loadBatch() {
     state.index = 0;
     state.results = [];
     if (state.cards.length === 0) {
-      finishEmpty();
+      finishEmpty(data.next_due);
       return;
     }
+    renderControls();
     hide(el.statusPanel);
     show(el.controls);
     show(el.stats);
@@ -747,7 +841,7 @@ async function loadBatch() {
 // cards must not wait on them. A failure is logged and left at the placeholders.
 async function loadSummary() {
   try {
-    const res = await fetch(API.summary(API.lang), { headers: { Accept: "application/json" } });
+    const res = await fetch(API.summary(API.lang, deckID()), { headers: { Accept: "application/json" } });
     if (!res.ok) throw new Error(`summary failed: ${res.status}`);
     applySummary(await res.json());
   } catch (err) {
@@ -756,12 +850,13 @@ async function loadSummary() {
 }
 
 async function flush() {
-  // Send the whole batch's grades in one request.
+  // Send the whole batch's grades in one request, naming the deck they belong to
+  // — without it the server would file every answer against the noun deck.
   try {
     const res = await fetch(API.grade, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lang: API.lang, results: state.results }),
+      body: JSON.stringify({ lang: API.lang, deck: deckID(), results: state.results }),
     });
     if (!res.ok) throw new Error(`grade failed: ${res.status}`);
     return await res.json();
@@ -769,6 +864,13 @@ async function flush() {
     console.error(err);
     return null;
   }
+}
+
+// deckID is the deck currently being studied. Empty when none is open, which the
+// server reads as the noun deck — the only deck there was when the parameter did
+// not exist.
+function deckID() {
+  return state.deck ? state.deck.id : "";
 }
 
 // --- rendering -------------------------------------------------------------
@@ -790,21 +892,59 @@ function renderStack() {
   updateStats();
 }
 
+// buildCard draws one question. The bands are the three answers in their colour
+// slots, revealed on the answer; the prompt and the word itself come from the
+// deck's drill, so a preposition is asked exactly the way a noun is.
 function buildCard(data, behind) {
   const card = document.createElement("div");
   card.className = "card" + (behind ? " behind" : "");
+
+  const bands = drill().answers
+    .map((a) => `<div class="band ${a.slot}">${escapeHtml(a.label)}</div>`)
+    .join("");
+
   card.innerHTML = `
-    <div class="band der">der</div>
-    <div class="band die">die</div>
-    <div class="band das">das</div>
-    <p class="lemma">${escapeHtml(data.lemma)}</p>
-    <p class="prompt">der, die, or das?</p>
+    ${bands}
+    <p class="lemma">${escapeHtml(data.item)}</p>
+    <p class="prompt">${escapeHtml(drill().prompt)}</p>
     <div class="feedback"></div>
     <div class="gloss"></div>
     <p class="example" lang="de"></p>
     <p class="example-en" lang="en"></p>
   `;
   return card;
+}
+
+// renderControls redraws the three answer buttons and the drop-zone hints for the
+// active drill. They are markup in index.html for the noun deck's sake — the page
+// should not be blank before the first batch arrives — and rewritten here as soon
+// as a deck is opened, because their labels are the deck's answers and nothing
+// else can know them.
+function renderControls() {
+  const spec = drill();
+
+  el.controls.replaceChildren();
+  for (const a of spec.answers) {
+    const btn = document.createElement("button");
+    btn.className = `choice ${a.slot}`;
+    btn.type = "button";
+    btn.dataset.answer = a.answer;
+    btn.textContent = a.label;
+
+    const legend = document.createElement("small");
+    legend.textContent = DIR_HINT[a.dir];
+    btn.appendChild(legend);
+
+    el.controls.appendChild(btn);
+  }
+
+  for (const a of spec.answers) {
+    const hint = el.hints[a.dir];
+    if (hint) {
+      hint.textContent = a.short;
+      hint.dataset.answer = a.answer;
+    }
+  }
 }
 
 function updateStats() {
@@ -821,7 +961,7 @@ function applySummary(sum) {
 
 // --- answering -------------------------------------------------------------
 
-function answer(article) {
+function answer(given) {
   // A press while an answer is on screen means "I've got it" — skip the rest of
   // the reveal instead of swallowing the input. Without this the longer miss
   // reveal would be a tax on every miss rather than a floor for the ones that
@@ -835,14 +975,14 @@ function answer(article) {
   if (!card) return;
 
   state.locked = true;
-  const correct = article === card.article;
+  const correct = given === card.answer;
   const elapsed = performance.now() - state.shownAt;
   const rating = correct ? gradeBySpeed(elapsed) : "again";
-  state.results.push({ lemma: card.lemma, rating });
+  state.results.push({ item: card.item, rating });
 
   revealFeedback(correct, card);
 
-  const direction = DIR[card.article] || DIR[article];
+  const direction = dirFor(card.answer) || dirFor(given);
   if (correct) {
     flingCard(direction);
     scheduleAdvance(HIT_HOLD_MS);
@@ -900,10 +1040,26 @@ function revealFeedback(correct, card) {
   top.classList.add("answered", correct ? "correct" : "incorrect");
   const fb = top.querySelector(".feedback");
   const gloss = top.querySelector(".gloss");
-  fb.textContent = correct ? `Richtig — ${card.article} ${card.lemma}` : `${card.article} ${card.lemma}`;
+
+  const said = answerLine(card);
+  fb.textContent = correct ? `Richtig — ${said}` : said;
   gloss.textContent = card.gloss;
-  const band = top.querySelector(`.band.${card.article}`);
+
+  const band = top.querySelector(`.band.${slotFor(card.answer)}`);
   if (band) band.style.opacity = "1";
+}
+
+// answerLine is the correct answer as a learner should read it back.
+//
+// For a noun that is the article in front of the noun — "die Zeit" — which is the
+// form worth memorising. For a trigger it is the declined phrase, "durch den
+// Park", because the case is learned as a shape and not as a label; the label
+// alone would be the answer to a quiz rather than to the language. The phrase
+// carries the case name after it so the two are tied together.
+function answerLine(card) {
+  if (card.phrase) return `${card.phrase} — ${labelFor(card.answer)}`;
+
+  return `${card.answer} ${card.item}`;
 }
 
 // revealExample puts the missed noun's sentence on the card itself. It is already
@@ -918,9 +1074,11 @@ function revealExample(card) {
   const en = top.querySelector(".example-en");
   if (!de || !en) return;
 
-  // The sentence uses the noun in a natural case, so its article may be declined
-  // and need not be the one being drilled; the nominative follows for reference.
-  de.textContent = `${card.example} (${card.article} ${card.lemma})`;
+  // For a noun the sentence uses it in a natural case, so its article may be
+  // declined and need not be the one being drilled; the nominative follows for
+  // reference. For a trigger the sentence is already the point and the phrase has
+  // just been shown as the answer, so nothing is appended.
+  de.textContent = card.phrase ? card.example : `${card.example} (${card.answer} ${card.item})`;
   en.textContent = card.example_en;
   top.classList.add("show-example");
 }
@@ -973,7 +1131,7 @@ function attachDrag(card, data) {
     const dy = p.y - startY;
     const dir = swipeDir(dx, dy);
     if (dir) {
-      answer(articleForDir(dir));
+      answer(answerForDir(dir));
     } else {
       card.style.transform = ""; // snap back
       clearHints();
@@ -1003,10 +1161,6 @@ function swipeDir(dx, dy) {
   return dir;
 }
 
-function articleForDir(dir) {
-  return Object.keys(DIR).find((a) => DIR[a] === dir);
-}
-
 function highlightDir(dir) {
   clearHints();
   if (dir === "left") el.hints.left.classList.add("active");
@@ -1034,31 +1188,47 @@ async function finishBatch() {
 
   const correct = state.results.filter((r) => r.rating !== "again").length;
   el.panelTitle.textContent = "Batch complete";
-  el.panelBody.textContent = `${correct}/${state.results.length} correct. ` +
-    (sum ? `${sum.due_now} due now · ${sum.learned}/${sum.deck_size} nouns seen.` : "");
+
+  // "Next batch" is worth offering only when there is one. A deck with nothing due
+  // and nothing unseen has none — pressing it would fetch an empty batch and land
+  // on the caught-up panel — and the summary we just flushed knows both facts, so
+  // the button gives way to the time the deck reopens. Both conditions are needed:
+  // nothing due while cards remain unseen still has a batch to serve.
+  const exhausted = Boolean(sum) && sum.due_now === 0 && sum.learned >= sum.deck_size;
+  const reopens = exhausted ? describeDue(sum.next_due) : "";
+
+  if (exhausted) hide(el.againBtn);
+  else show(el.againBtn);
+
+  let tail = sum ? `${sum.due_now} due now · ${sum.learned}/${sum.deck_size} nouns seen.` : "";
+  if (reopens) tail += ` Your next review is ${reopens}.`;
+
+  el.panelBody.textContent = `${correct}/${state.results.length} correct. ${tail}`.trim();
   renderMisses();
   show(el.panel);
 }
 
-// Every noun answered wrong this round, in the order it came up. A miss is
-// exactly a result rated "again" — the rating answer() assigns when the swipe
-// did not match the card's article — so this needs no separate bookkeeping.
+// Every card answered wrong this round, in the order it came up. A miss is
+// exactly a result rated "again" — the rating answer() assigns when the swipe did
+// not match the card's answer — so this needs no separate bookkeeping.
 function missedCards() {
-  const byLemma = new Map(state.cards.map((c) => [c.lemma, c]));
+  const byItem = new Map(state.cards.map((c) => [c.item, c]));
   return state.results
     .filter((r) => r.rating === "again")
-    .map((r) => byLemma.get(r.lemma))
+    .map((r) => byItem.get(r.item))
     .filter(Boolean);
 }
 
-// Show each missed noun in a sentence, so the round ends on the words that need
-// the work rather than on a score alone.
+// Show each missed card in a sentence, so the round ends on the material that
+// needs the work rather than on a score alone.
 //
-// The sentence uses the noun in a natural case, so its article may be declined
-// ("Ich kenne den Mann nicht.") and is not necessarily the one being drilled.
-// The nominative is therefore composed here from the card's own article and
-// lemma and appended for reference — built at render time rather than stored, so
-// it always matches the gender this deck teaches.
+// The heading is the answer as it is worth memorising — "die Zeit" for a noun,
+// "durch den Park" for a trigger — and the sentence follows. For a noun the
+// sentence uses it in a natural case, so its article may be declined ("Ich kenne
+// den Mann nicht.") and is not necessarily the one being drilled; the nominative
+// is appended for reference, built at render time so it always matches the gender
+// this deck teaches. A trigger needs no such gloss: its phrase is already the
+// heading.
 function renderMisses() {
   const missed = missedCards();
   el.missList.replaceChildren();
@@ -1073,8 +1243,8 @@ function renderMisses() {
 
     const head = document.createElement("div");
     const word = document.createElement("span");
-    word.className = `miss-word ${card.article}`;
-    word.textContent = `${card.article} ${card.lemma}`;
+    word.className = `miss-word ${slotFor(card.answer)}`;
+    word.textContent = card.phrase ? card.phrase : `${card.answer} ${card.item}`;
     const gloss = document.createElement("span");
     gloss.className = "miss-gloss";
     gloss.textContent = ` — ${card.gloss}`;
@@ -1084,10 +1254,11 @@ function renderMisses() {
     example.className = "miss-example";
     example.lang = "de";
     example.textContent = `${card.example} `;
-    const nominative = document.createElement("span");
-    nominative.className = "miss-nominative";
-    nominative.textContent = `(${card.article} ${card.lemma})`;
-    example.appendChild(nominative);
+
+    const aside = document.createElement("span");
+    aside.className = "miss-nominative";
+    aside.textContent = card.phrase ? `(${labelFor(card.answer)})` : `(${card.answer} ${card.item})`;
+    example.appendChild(aside);
 
     const translation = document.createElement("p");
     translation.className = "miss-translation";
@@ -1095,23 +1266,93 @@ function renderMisses() {
     translation.textContent = card.example_en;
 
     item.append(head, example, translation);
+
+    // A card with an authored aside gets it here, where there is room to read it
+    // — the drill itself is no place for a sentence of prose.
+    if (card.note) {
+      const note = document.createElement("p");
+      note.className = "miss-note";
+      note.textContent = card.note;
+      item.appendChild(note);
+    }
+
     el.missList.appendChild(item);
   }
 
   show(el.misses);
 }
 
-function finishEmpty() {
+// finishEmpty is the panel for a deck with nothing to do.
+//
+// It hides "Next batch" rather than offering it. The button asks the server for
+// another batch, and the server has just said there is none — pressing it refetches
+// the same empty answer and redraws this same panel, which reads as a broken button
+// rather than as a finished deck. The only honest actions here are to leave, and to
+// know when to come back.
+function finishEmpty(nextDue) {
   hide(el.controls);
   hide(el.hintBox);
   hide(el.footer);
   clearStack();
   hide(el.statusPanel);
+  hide(el.againBtn);
   el.panelTitle.textContent = "All caught up";
-  el.panelBody.textContent =
-    "Nothing is due in this deck right now. Come back later, start another batch, or pick a different deck.";
+
+  const when = describeDue(nextDue);
+  el.panelBody.textContent = when
+    ? `Nothing is due in this deck right now. Your next review is ${when}.`
+    : "Nothing is due in this deck right now. Come back later.";
+
   hide(el.misses); // nothing was answered, so any list from a previous round is stale.
   show(el.panel);
+}
+
+// finishLocked is the panel for a deck the server will not open yet. It should be
+// unreachable from the shelf, which draws the same lock — so it exists for the
+// cases the shelf cannot know about, and it explains rather than just refusing.
+function finishLocked(info) {
+  hide(el.controls);
+  hide(el.hintBox);
+  hide(el.footer);
+  clearStack();
+  hide(el.statusPanel);
+  hide(el.againBtn);
+  hide(el.misses);
+
+  el.panelTitle.textContent = "Not open yet";
+  el.panelBody.textContent = info && info.requires_need
+    ? `Work through ${info.requires_need} cards of the deck before this one to unlock it — you have ${info.requires_seen}.`
+    : "This deck unlocks once you have worked through the one before it.";
+
+  show(el.panel);
+}
+
+// describeDue renders a scheduling instant as the phrase a learner actually wants:
+// how long until the deck reopens, in their own timezone, at the coarsest unit that
+// is still useful. The server sends UTC and holds no opinion about where it is read;
+// all of the localising happens here.
+//
+// An absent or unparseable value returns the empty string, so every caller can treat
+// "we do not know when" as one case rather than rendering "Invalid Date" at a
+// learner.
+function describeDue(iso) {
+  if (!iso) return "";
+
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return "";
+
+  const ms = when.getTime() - Date.now();
+  if (ms <= 0) return "now";
+
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 60) return rtf.format(minutes, "minute");
+
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return rtf.format(hours, "hour");
+
+  // "tomorrow" rather than "in 1 day", which is what numeric:"auto" buys.
+  return rtf.format(Math.round(hours / 24), "day");
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -1141,18 +1382,23 @@ function wire() {
   document.addEventListener("keydown", (e) => {
     if (!state.deck) return;
 
-    const map = { ArrowLeft: "der", ArrowUp: "das", ArrowRight: "die" };
-    const article = map[e.key];
-    if (article) {
+    // The arrow keys mean directions, and the deck's drill says what each
+    // direction answers — so the same three keys drill genders in one deck and
+    // cases in another without the keyboard needing to know which.
+    const dir = { ArrowLeft: "left", ArrowUp: "up", ArrowRight: "right" }[e.key];
+    if (!dir) return;
+
+    const given = answerForDir(dir);
+    if (given) {
       e.preventDefault();
-      answer(article);
+      answer(given);
     }
   });
 
   // Tap buttons.
   el.controls.addEventListener("click", (e) => {
     const btn = e.target.closest(".choice");
-    if (btn) answer(btn.dataset.article);
+    if (btn) answer(btn.dataset.answer);
   });
 
   el.againBtn.addEventListener("click", loadBatch);
