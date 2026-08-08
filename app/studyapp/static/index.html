@@ -56,9 +56,9 @@
          while a panel is up: they are positioned around the card and would
          otherwise frame the deck picker as though it were answerable. -->
     <div id="hints" hidden>
-      <div class="hint hint-left"  data-article="der">der</div>
-      <div class="hint hint-up"    data-article="das">das</div>
-      <div class="hint hint-right" data-article="die">die</div>
+      <div class="hint hint-left"  data-answer="der">der</div>
+      <div class="hint hint-up"    data-answer="das">das</div>
+      <div class="hint hint-right" data-answer="die">die</div>
     </div>
 
     <!-- The live card stack is injected here. -->
@@ -143,10 +143,14 @@
     </section>
   </main>
 
+  <!-- The answer buttons for the noun deck. app.js rewrites them from the deck's
+       own drill as soon as one is opened — a case deck answers akkusativ / genitiv
+       / dativ in these same three positions — but they are written out here so the
+       page is never blank before the first batch arrives. -->
   <nav class="controls" id="controls" hidden aria-label="Answer">
-    <button class="choice der" data-article="der">der<small>◀ swipe left</small></button>
-    <button class="choice das" data-article="das">das<small>▲ swipe up</small></button>
-    <button class="choice die" data-article="die">die<small>swipe right ▶</small></button>
+    <button class="choice der" type="button" data-answer="der">der<small>◀ swipe left</small></button>
+    <button class="choice das" type="button" data-answer="das">das<small>▲ swipe up</small></button>
+    <button class="choice die" type="button" data-answer="die">die<small>swipe right ▶</small></button>
   </nav>
 
   <footer class="footer" id="footer" hidden>

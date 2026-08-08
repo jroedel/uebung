@@ -196,6 +196,27 @@ body {
 .card .band.die { right: 14px; color: var(--die); border: 2px solid var(--die); }
 .card .band.das { left: 50%; transform: translateX(-50%); color: var(--das); border: 2px solid var(--das); }
 
+/* The case drill, sized for its own words.
+ *
+ * Everything above was measured against "der": a three-letter answer and a
+ * single-noun prompt. A case deck answers "Akkusativ" and can ask with a whole
+ * construction — "es geht jemandem (gut)" — so the type that fits one does not
+ * fit the other. The drill is on the body (see startDeck), which keeps every
+ * such adjustment here rather than scattered through the script.
+ */
+body[data-drill="case-3way"] .card .lemma {
+  font-size: clamp(24px, 6.5vw, 38px);
+  line-height: 1.15;
+  overflow-wrap: break-word;
+}
+body[data-drill="case-3way"] .card .band { font-size: 11px; padding: 3px 9px; }
+body[data-drill="case-3way"] .choice { font-size: 16px; }
+body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
+
+/* The phrase a missed trigger should have produced — "durch den Park" — is the
+   answer worth reading back, so it gets the same weight the article does. */
+.miss-note { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+
 .card.correct { outline: 3px solid var(--right); }
 .card.incorrect { outline: 3px solid var(--wrong); }
 .card.correct .feedback { color: var(--right); }

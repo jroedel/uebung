@@ -13,9 +13,9 @@ network round-trip.
 
 Behind it sits a **course**: an ordered shelf of decks, each with an introduction
 explaining the pattern behind its material, and each unlocked by working through
-the one before it. Two more are written — which case a preposition takes, and
-which case a verb takes — and appear on the shelf with their introductions
-readable now; their drill is still to come.
+the one before it. Two more follow the nouns — which case a preposition takes, and
+which case a verb takes — drilled with the same three-way swipe over *Akkusativ*,
+*Genitiv* and *Dativ*.
 
 ## Quick start
 
@@ -204,13 +204,15 @@ The client decides for itself which drills it can render, from the `drill` field
 A deck whose drill this build does not know still appears with its introduction —
 that writing is worth reading before the drill exists — but cannot be started.
 Whether a browser can draw a deck is a fact about the browser, so the server never
-sends a "playable" flag it would be guessing at.
+sends a "playable" flag it would be guessing at. Both drills in the course today,
+`article-3way` and `case-3way`, are renderable; the mechanism is what lets a third
+ship its introduction ahead of its drill.
 
 ## How a session works
 
-1. The browser asks `GET /api/batch?lang=de` once and receives an ordered set of
-   cards — due reviews first, then a capped number of new nouns — each carrying
-   its correct article, gloss, and example sentence.
+1. The browser asks `GET /api/batch?lang=de&deck=...` once and receives an ordered
+   set of cards — due reviews first, then a capped number of new ones — each
+   carrying its correct answer, gloss, and example sentence.
 2. You answer every card locally. A miss is graded *again*; a hit is graded by
    how fast it came (*easy* / *good* / *hard*). Nothing hits the network.
    A hit clears in 0.9s. A miss holds still, shows the sentence, and then drifts
@@ -220,7 +222,7 @@ sends a "playable" flag it would be guessing at.
    you move at speed.
 3. When the batch is done the client flushes every grade in one
    `POST /api/grade`. The server runs each through FSRS and persists the result.
-4. The round ends on the nouns you got wrong, each shown in a sentence with its
+4. The round ends on the cards you got wrong, each shown in a sentence with its
    translation, so a miss is corrected in context rather than just counted.
 
 The example sentences use their noun in a natural case, which means the article
@@ -229,13 +231,30 @@ is appended for reference, "(der Mann)", and is composed at display time from
 the card's own article and lemma, so it can never disagree with the gender the
 deck teaches.
 
-`/api/batch`, `/api/grade` and `/api/summary` still name no deck: they answer for
-the noun deck, which is the only one with a drill. The scheduler underneath is
-already deck-aware, so the deck is named once in `app/studyapp` and the wire
-format is unchanged; a `deck` parameter arrives with the second drill, not before
-it, so it never has to lie about a deck that cannot be answered.
+A case deck answers the same way with different material. Its cards are
+**triggers** — a preposition or a verb — and the answer worth remembering is not
+the label but the declined phrase, so a miss reads back "durch den Park —
+Akkusativ" rather than the case name alone. The three answers sit in the same
+three directions and wear the same three colours as the articles do, chosen the
+same way: the two horizontal swipes take the commonest answers and the vertical
+flick the rarest, which is *das* for gender and the genitive for case.
 
-`GET /api/summary?lang=de` reports deck size, nouns seen, and reviews due now.
+`/api/batch`, `/api/grade` and `/api/summary` all take a `deck`. Omitting it means
+the noun deck — every request made before the course had a second drill left it
+out, and every one of them meant that deck, so defaulting is what keeps a cached
+client working. `/api/grade` accepts a card's key as either `item` or, for the
+same reason, the older `lemma`; sending both is an error rather than a silent
+preference.
+
+A locked deck is refused with 403 by `/api/batch` and `/api/grade`, not merely
+greyed out on the shelf. A gate enforced only in the browser is a suggestion, and
+grading is the half that matters: progress in a locked deck is exactly what
+unlocks the deck after it.
+
+`GET /api/summary?lang=de&deck=...` reports deck size, cards seen, reviews due
+now, and — when nothing is due — when the next review lands, so a finished deck
+can say "next review in 16 days" instead of "0 due" and a dead *Next batch*
+button.
 `GET /healthz` reports whether the app can serve, not whether it is listening. It
 selects the app's real column lists from both study tables, deliberately rather
 than pinging: a ping proves a connection is alive and reads nothing, so it answers

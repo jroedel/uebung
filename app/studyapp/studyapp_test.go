@@ -16,6 +16,8 @@ import (
 	curriculumseed "github.com/jroedel/uebung/business/domain/curriculum/stores/seeddb"
 	"github.com/jroedel/uebung/business/domain/study/stores/memdb"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
+	triggerseed "github.com/jroedel/uebung/business/domain/trigger/stores/seeddb"
+	"github.com/jroedel/uebung/business/domain/trigger/triggerbus"
 	"github.com/jroedel/uebung/business/domain/vocab/stores/seeddb"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
 	"github.com/jroedel/uebung/business/types/deckid"
@@ -49,6 +51,7 @@ func newServer(t *testing.T) http.Handler {
 	study := studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()})
 	app := studyapp.New(studyapp.Config{
 		Vocab:      vocab,
+		Trigger:    triggerbus.NewBusiness(triggerseed.New()),
 		Study:      study,
 		Curriculum: newCurriculum(t),
 		BatchLimit: 5,
@@ -65,6 +68,7 @@ func newServerWithStatic(t *testing.T) http.Handler {
 
 	app := studyapp.New(studyapp.Config{
 		Vocab:      vocabbus.NewBusiness(seeddb.New()),
+		Trigger:    triggerbus.NewBusiness(triggerseed.New()),
 		Study:      studybus.NewBusiness(memdb.New(), studybus.Config{FSRS: fsrs.Default()}),
 		Curriculum: newCurriculum(t),
 		Now:        fixedNow,
@@ -595,6 +599,160 @@ func TestBatchRejectsBadLanguage(t *testing.T) {
 	}
 }
 
+// A batch with cards in it says nothing about the future: the learner has work in
+// front of them, and the second read of their progress that next_due costs is not
+// worth paying to tell them what happens after it.
+func TestBatchOmitsNextDueWhileCardsRemain(t *testing.T) {
+	h := newServer(t)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/batch?lang=de", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var body struct {
+		Cards   []json.RawMessage `json:"cards"`
+		NextDue string            `json:"next_due"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding batch: %v", err)
+	}
+
+	if len(body.Cards) == 0 {
+		t.Fatal("expected a full batch from an untouched deck")
+	}
+	if body.NextDue != "" {
+		t.Fatalf("next_due = %q, want it omitted while cards remain", body.NextDue)
+	}
+}
+
+// The state a finished deck actually leaves a learner in: everything seen, nothing
+// due, and an empty batch. That is the scheduler working, but it is also the one
+// answer that gives the client nothing to say, so the batch has to carry when the
+// deck reopens — and the shelf has to carry it too, or a caught-up deck reads as an
+// empty one.
+func TestExhaustedDeckReportsWhenTheNextCardIsDue(t *testing.T) {
+	h := newServer(t)
+	ctx := t.Context()
+
+	nouns, err := vocabbus.NewBusiness(seeddb.New()).Deck(ctx, langcode.German)
+	if err != nil {
+		t.Fatalf("loading the deck: %v", err)
+	}
+
+	// Answer the whole deck, so nothing is unseen and nothing is due back yet.
+	type outcome struct {
+		Lemma  string `json:"lemma"`
+		Rating string `json:"rating"`
+	}
+	payload := struct {
+		Lang    string    `json:"lang"`
+		Results []outcome `json:"results"`
+	}{Lang: "de"}
+	for _, n := range nouns {
+		payload.Results = append(payload.Results, outcome{Lemma: n.Lemma, Rating: "easy"})
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encoding flush: %v", err)
+	}
+
+	gradeReq := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/grade", bytes.NewReader(raw))
+	gradeReq.Header.Set("Content-Type", "application/json")
+	gradeRec := httptest.NewRecorder()
+	h.ServeHTTP(gradeRec, gradeReq)
+
+	if gradeRec.Code != http.StatusOK {
+		t.Fatalf("grade status = %d, want 200; body=%s", gradeRec.Code, gradeRec.Body)
+	}
+
+	batchReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/batch?lang=de", nil)
+	batchRec := httptest.NewRecorder()
+	h.ServeHTTP(batchRec, batchReq)
+
+	var batch struct {
+		Cards   []json.RawMessage `json:"cards"`
+		NextDue string            `json:"next_due"`
+	}
+	if err := json.Unmarshal(batchRec.Body.Bytes(), &batch); err != nil {
+		t.Fatalf("decoding batch: %v", err)
+	}
+
+	if len(batch.Cards) != 0 {
+		t.Fatalf("cards = %d, want an empty batch once the deck is answered", len(batch.Cards))
+	}
+
+	nextDue, err := time.Parse(time.RFC3339, batch.NextDue)
+	if err != nil {
+		t.Fatalf("next_due = %q, want an RFC3339 instant: %v", batch.NextDue, err)
+	}
+	if !nextDue.After(fixedNow()) {
+		t.Fatalf("next_due = %s, want a moment after now (%s)", nextDue, fixedNow())
+	}
+
+	// The same fact has to reach the shelf, which is where a learner decides what
+	// to do next.
+	decksReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/decks?lang=de", nil)
+	decksRec := httptest.NewRecorder()
+	h.ServeHTTP(decksRec, decksReq)
+
+	var shelf struct {
+		Decks []struct {
+			ID      string `json:"id"`
+			DueNow  int    `json:"due_now"`
+			NextDue string `json:"next_due"`
+		} `json:"decks"`
+	}
+	if err := json.Unmarshal(decksRec.Body.Bytes(), &shelf); err != nil {
+		t.Fatalf("decoding shelf: %v", err)
+	}
+
+	var found bool
+	for _, d := range shelf.Decks {
+		if d.ID != deckid.DerDieDas.String() {
+			continue
+		}
+		found = true
+
+		if d.DueNow != 0 {
+			t.Fatalf("due_now = %d, want 0 for a deck just answered in full", d.DueNow)
+		}
+		if d.NextDue != batch.NextDue {
+			t.Fatalf("shelf next_due = %q, batch next_due = %q; they describe the same card and must agree", d.NextDue, batch.NextDue)
+		}
+	}
+
+	if !found {
+		t.Fatalf("no %q deck on the shelf", deckid.DerDieDas)
+	}
+}
+
+// A deck nobody has touched has nothing scheduled: every card is available rather
+// than waiting, so there is no "next" review to name and the field stays absent.
+// Without this, a zero time formatted as year 1 would read as a review due in the
+// distant past.
+func TestUntouchedDeckHasNoNextDue(t *testing.T) {
+	h := newServer(t)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/summary?lang=de", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var sum struct {
+		Learned int    `json:"learned"`
+		NextDue string `json:"next_due"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &sum); err != nil {
+		t.Fatalf("decoding summary: %v", err)
+	}
+
+	if sum.Learned != 0 {
+		t.Fatalf("learned = %d, want an untouched deck", sum.Learned)
+	}
+	if sum.NextDue != "" {
+		t.Fatalf("next_due = %q, want it absent when nothing is scheduled", sum.NextDue)
+	}
+}
+
 func TestGradeFlushAppliesAndReportsProgress(t *testing.T) {
 	h := newServer(t)
 	ctx := context.Background()
@@ -656,6 +814,373 @@ func TestGradeFlushAppliesAndReportsProgress(t *testing.T) {
 	if gr.DeckSize < 200 {
 		t.Fatalf("deck_size = %d, want the full deck", gr.DeckSize)
 	}
+}
+
+// studyDeck answers every card the named deck offers, batch after batch, until it
+// runs dry. It returns how many distinct cards were answered — which is the deck's
+// coverage, and therefore what the next deck's gate is measured against.
+func studyDeck(t *testing.T, h http.Handler, deck string) int {
+	t.Helper()
+
+	seen := map[string]bool{}
+
+	for round := range 100 {
+		batchRec := httptest.NewRecorder()
+		h.ServeHTTP(batchRec, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+			"/api/batch?lang=de&deck="+deck, nil))
+
+		if batchRec.Code != http.StatusOK {
+			t.Fatalf("batch %d of %q: status %d; body=%s", round, deck, batchRec.Code, batchRec.Body)
+		}
+
+		var batch struct {
+			Cards []struct {
+				Item string `json:"item"`
+			} `json:"cards"`
+		}
+		if err := json.Unmarshal(batchRec.Body.Bytes(), &batch); err != nil {
+			t.Fatalf("decoding batch: %v", err)
+		}
+
+		if len(batch.Cards) == 0 {
+			return len(seen)
+		}
+
+		type outcome struct {
+			Item   string `json:"item"`
+			Rating string `json:"rating"`
+		}
+		payload := struct {
+			Lang    string    `json:"lang"`
+			Deck    string    `json:"deck"`
+			Results []outcome `json:"results"`
+		}{Lang: "de", Deck: deck}
+
+		for _, c := range batch.Cards {
+			seen[c.Item] = true
+			payload.Results = append(payload.Results, outcome{Item: c.Item, Rating: "easy"})
+		}
+
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("encoding flush: %v", err)
+		}
+
+		gradeRec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/grade", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		h.ServeHTTP(gradeRec, req)
+
+		if gradeRec.Code != http.StatusOK {
+			t.Fatalf("grade in %q: status %d; body=%s", deck, gradeRec.Code, gradeRec.Body)
+		}
+	}
+
+	t.Fatalf("deck %q never ran dry", deck)
+
+	return 0
+}
+
+// unlockPrepositions works through the noun deck, which is what the preposition
+// deck is gated behind. Every test that wants to reach a case deck has to pay this
+// first — which is the course working, not an obstacle: the second deck is not
+// supposed to be reachable from a standing start.
+func unlockPrepositions(t *testing.T, h http.Handler) {
+	t.Helper()
+
+	if seen := studyDeck(t, h, "der-die-das"); seen == 0 {
+		t.Fatal("studied no nouns")
+	}
+}
+
+// The preposition deck is a different drill over different material, and it has to
+// arrive as real cards — trigger, case and the declined phrase that teaches it —
+// through the same endpoint that serves the nouns.
+func TestBatchServesTheCaseDeck(t *testing.T) {
+	h := newServer(t)
+	unlockPrepositions(t, h)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/api/batch?lang=de&deck=de-praepositionen", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	var body struct {
+		Deck  string `json:"deck"`
+		Cards []struct {
+			Item    string `json:"item"`
+			Answer  string `json:"answer"`
+			Phrase  string `json:"phrase"`
+			Gloss   string `json:"gloss"`
+			Lemma   string `json:"lemma"`
+			Article string `json:"article"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding batch: %v", err)
+	}
+
+	if body.Deck != "de-praepositionen" {
+		t.Fatalf("deck = %q, want de-praepositionen", body.Deck)
+	}
+	if len(body.Cards) == 0 {
+		t.Fatal("no cards from the preposition deck")
+	}
+
+	for _, c := range body.Cards {
+		switch c.Answer {
+		case "akkusativ", "dativ", "genitiv":
+		default:
+			t.Fatalf("card %q has answer %q, want a governed case", c.Item, c.Answer)
+		}
+
+		if c.Phrase == "" || c.Gloss == "" {
+			t.Fatalf("card %q is missing its phrase or gloss: %+v", c.Item, c)
+		}
+		if !strings.Contains(c.Phrase, c.Item) {
+			// Pattern triggers are allowed to fail this in the store; none of them
+			// are in the preposition deck.
+			t.Fatalf("card %q phrase %q does not show the trigger", c.Item, c.Phrase)
+		}
+
+		// A case card has no gender and no lemma. Inventing either to fill the
+		// deprecated fields would hand a stale client something false to draw.
+		if c.Lemma != "" || c.Article != "" {
+			t.Fatalf("case card %q carries noun-deck fields: lemma=%q article=%q", c.Item, c.Lemma, c.Article)
+		}
+	}
+}
+
+// The lock has to hold at the endpoint, not only in the shelf that draws it.
+// Otherwise the deck is open to anyone who types its id into the URL, and the
+// progress they build there is exactly what unlocks it for real.
+func TestBatchRefusesALockedDeck(t *testing.T) {
+	h := newServer(t)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/api/batch?lang=de&deck=de-verben-kasus", nil))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body)
+	}
+
+	var body struct {
+		Error        string `json:"error"`
+		Requires     string `json:"requires"`
+		RequiresNeed int    `json:"requires_need"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding refusal: %v", err)
+	}
+
+	if body.Requires != "de-praepositionen" {
+		t.Fatalf("requires = %q, want the preposition deck", body.Requires)
+	}
+	if body.RequiresNeed == 0 {
+		t.Fatal("refusal should say how many cards are needed")
+	}
+}
+
+// Refusing the batch but not the grade would leave the gate walkable: a client can
+// post grades for cards it never fetched, and progress in a locked deck is what
+// unlocks its successor.
+func TestGradeRefusesALockedDeck(t *testing.T) {
+	h := newServer(t)
+
+	body := `{"lang":"de","deck":"de-verben-kasus","results":[{"item":"helfen","rating":"good"}]}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/grade", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body)
+	}
+}
+
+// The whole point of the course: working through one deck opens the next. This is
+// the path that was impossible before the case drill existed — the preposition deck
+// had no way to be studied, so the verb deck could never be reached.
+func TestWorkingThroughAPrerequisiteUnlocksTheNextDeck(t *testing.T) {
+	h := newServer(t)
+	unlockPrepositions(t, h)
+
+	locked := httptest.NewRecorder()
+	h.ServeHTTP(locked, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/api/batch?lang=de&deck=de-verben-kasus", nil))
+	if locked.Code != http.StatusForbidden {
+		t.Fatalf("verb deck should start locked, got %d", locked.Code)
+	}
+
+	seen := studyDeck(t, h, "de-praepositionen")
+	if seen == 0 {
+		t.Fatal("studied no preposition cards")
+	}
+
+	opened := httptest.NewRecorder()
+	h.ServeHTTP(opened, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/api/batch?lang=de&deck=de-verben-kasus", nil))
+	if opened.Code != http.StatusOK {
+		t.Fatalf("verb deck still locked after %d preposition cards: status %d; body=%s",
+			seen, opened.Code, opened.Body)
+	}
+
+	var batch struct {
+		Cards []struct {
+			Item   string `json:"item"`
+			Answer string `json:"answer"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal(opened.Body.Bytes(), &batch); err != nil {
+		t.Fatalf("decoding batch: %v", err)
+	}
+	if len(batch.Cards) == 0 {
+		t.Fatal("verb deck unlocked but served no cards")
+	}
+
+	// The shelf must agree with the endpoint; they are what a learner sees and
+	// what they get.
+	shelfRec := httptest.NewRecorder()
+	h.ServeHTTP(shelfRec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/decks?lang=de", nil))
+
+	var shelf struct {
+		Decks []struct {
+			ID       string `json:"id"`
+			Unlocked bool   `json:"unlocked"`
+		} `json:"decks"`
+	}
+	if err := json.Unmarshal(shelfRec.Body.Bytes(), &shelf); err != nil {
+		t.Fatalf("decoding shelf: %v", err)
+	}
+
+	for _, d := range shelf.Decks {
+		if d.ID == "de-verben-kasus" && !d.Unlocked {
+			t.Fatal("endpoint serves the verb deck but the shelf still shows it locked")
+		}
+	}
+}
+
+// A cached client predates both the deck parameter and the item field: it posts a
+// flush naming neither, with `lemma` as the card key. The decoder rejects unknown
+// fields, so if either name stopped being accepted that client would 400 on every
+// flush and lose the round the learner had just finished.
+func TestGradeStillAcceptsTheOldLemmaWireFormat(t *testing.T) {
+	h := newServer(t)
+
+	body := `{"lang":"de","results":[{"lemma":"Haus","rating":"good"}]}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/grade", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	var gr struct {
+		Applied int    `json:"applied"`
+		Deck    string `json:"deck"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &gr); err != nil {
+		t.Fatalf("decoding grade response: %v", err)
+	}
+	if gr.Applied != 1 {
+		t.Fatalf("applied = %d, want 1", gr.Applied)
+	}
+}
+
+// Both names for one key is a client that has lost track of which field it owns.
+// Preferring one silently would file a grade against whichever card happened to
+// win, so it is refused.
+func TestGradeRejectsBothItemAndLemma(t *testing.T) {
+	h := newServer(t)
+
+	body := `{"lang":"de","results":[{"item":"Haus","lemma":"Haus","rating":"good"}]}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/grade", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestBatchRejectsAnUnknownDeck(t *testing.T) {
+	h := newServer(t)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/api/batch?lang=de&deck=de-does-not-exist", nil))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body)
+	}
+}
+
+// Grades must land in the deck they were earned in. If the deck were ignored, a
+// preposition answered correctly would advance a noun card of the same name, and
+// two decks would quietly share one schedule.
+func TestGradesAreScopedToTheirDeck(t *testing.T) {
+	h := newServer(t)
+	unlockPrepositions(t, h)
+
+	nounsBefore := learnedIn(t, h, "der-die-das")
+
+	body := `{"lang":"de","deck":"de-praepositionen","results":[{"item":"durch","rating":"good"}]}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/grade", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	var gr struct {
+		Learned  int `json:"learned"`
+		DeckSize int `json:"deck_size"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &gr); err != nil {
+		t.Fatalf("decoding grade response: %v", err)
+	}
+	if gr.Learned != 1 {
+		t.Fatalf("learned = %d in the preposition deck, want 1", gr.Learned)
+	}
+	if gr.DeckSize != 22 {
+		t.Fatalf("deck_size = %d, want the 22 prepositions", gr.DeckSize)
+	}
+
+	// The noun deck must be untouched by that flush.
+	if after := learnedIn(t, h, "der-die-das"); after != nounsBefore {
+		t.Fatalf("noun deck learned went %d -> %d after grading a preposition", nounsBefore, after)
+	}
+}
+
+// learnedIn reports how many cards of one deck the learner has ever answered.
+func learnedIn(t *testing.T, h http.Handler, deck string) int {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/api/summary?lang=de&deck="+deck, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary for %q: status %d; body=%s", deck, rec.Code, rec.Body)
+	}
+
+	var sum struct {
+		Learned int `json:"learned"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &sum); err != nil {
+		t.Fatalf("decoding summary: %v", err)
+	}
+
+	return sum.Learned
 }
 
 func TestGradeRejectsUnknownRating(t *testing.T) {
