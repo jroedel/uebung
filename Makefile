@@ -60,8 +60,13 @@ test-unit: ## Run unit tests
 	$(GO) test ./...
 
 .PHONY: test-integration
-test-integration: ## Run tests tagged as integration
+test-integration: ## Run integration tests (UEBUNG_REHEARSAL_DB=<backup> to rehearse a migration)
 	$(GO) test -tags=integration ./...
+
+.PHONY: rehearse-rollback
+rehearse-rollback: ## Show what a rolled-back binary does to a migrated db (DB=<backup>)
+	@[ -n "$(DB)" ] || { echo "usage: make rehearse-rollback DB=path/to/backup.db"; exit 1; }
+	./deploy/rehearse-rollback.sh "$(DB)"
 
 .PHONY: test
 test: test-unit lint vuln-check ## Full check: unit tests + lint + vulnerability scan
