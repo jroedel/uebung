@@ -18,18 +18,21 @@ package seeddb
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
 
 	"github.com/jroedel/uebung/business/domain/curriculum/curriculumbus"
+	"github.com/jroedel/uebung/business/seeddata"
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/drillkind"
 	"github.com/jroedel/uebung/business/types/langcode"
 )
 
-//go:embed articles_de.json triggers_de.json
-var files embed.FS
+// files is the authored content, which lives a layer down in business/seeddata
+// because triggers_de.json is read by the trigger domain's store as well as this
+// one — the same file carries a deck's catalog entry and the items it is drilled
+// from. See that package for why it is not embedded here.
+var files = seeddata.Files
 
 // catalogFile is the on-disk shape of one authored file: a language and the decks
 // it contributes to that language's catalog.

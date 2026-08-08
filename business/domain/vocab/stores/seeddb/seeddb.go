@@ -11,18 +11,19 @@ package seeddb
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
+	"github.com/jroedel/uebung/business/seeddata"
 	"github.com/jroedel/uebung/business/types/article"
 	"github.com/jroedel/uebung/business/types/langcode"
 )
 
-//go:embed nouns_de.json
-var files embed.FS
+// files is the authored content, which lives a layer down in business/seeddata
+// alongside the other decks' files so that all course material sits in one place.
+var files = seeddata.Files
 
 // nounRow is one raw deck entry as it appears in the embedded JSON: primitives
 // only, no strong types. It is the Storage-edge representation.
