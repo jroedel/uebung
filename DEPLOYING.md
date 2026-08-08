@@ -245,15 +245,43 @@ executable swap can undo a migration.** Step 11 therefore has a blind spot the
 moment a release changes the schema, and it is worth knowing its exact shape
 before you need it.
 
-Rehearse it first. Both of these run locally and neither touches the server:
+Rehearse it first. Get a real backup onto the development machine — `backup`
+writes it on the *server*, so there is a fetch step that is easy to skip and then
+fail on:
+
+```bash
+deploy/deploy.sh backup            # prints the new filename; the file stays remote
+
+set -a; . deploy/deploy.env; set +a
+mkdir -p backups
+scp -P "$SSH_PORT" "$SSH_USER@$SSH_HOST:$APP_DIR/backups/uebung-<stamp>.db" backups/
+# and its sidecar, if the backup was taken with cp rather than sqlite3 .backup:
+scp -P "$SSH_PORT" "$SSH_USER@$SSH_HOST:$APP_DIR/backups/uebung-<stamp>.db-wal" backups/
+```
+
+`backups/` is gitignored, and it must stay that way: these files hold addresses,
+nicknames and every learner's history, and this repository is public. Note the
+`uebung.db` rule does not cover them — a backup is `uebung-<stamp>.db`, a
+different name.
+
+Then rehearse. Both of these run locally and neither touches the server:
 
 ```bash
 # 1. Does real data survive the migration? Point it at a backup, not a live file.
-make test-integration UEBUNG_REHEARSAL_DB=path/to/backups/uebung-<stamp>.db
+make test-integration UEBUNG_REHEARSAL_DB=$PWD/backups/uebung-<stamp>.db
 
 # 2. What does the old binary do against a migrated database?
-deploy/rehearse-rollback.sh path/to/backups/uebung-<stamp>.db
+deploy/rehearse-rollback.sh backups/uebung-<stamp>.db <the currently deployed ref>
 ```
+
+The second one's ref argument matters and defaults to `HEAD~1`, which is rarely
+what you want. Pass the commit **production is actually running** — comparing a
+branch against a `main` that already contains it builds two identical binaries and
+reports `ROLLBACK IS SAFE`, which is true and tells you nothing.
+
+Rehearse against a real backup rather than a development database. They differ in
+ways that matter: the development file here had 154 cards for one user, and
+production had 253 across two.
 
 The second one exists because the answer is not obvious and, for the deck
 migration, was the worst of the available answers:

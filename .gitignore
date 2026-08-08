@@ -33,6 +33,13 @@ uebung.db-wal
 uebung.db-shm
 *.tmp
 
+# Database backups pulled off the server to rehearse a migration against. These
+# are the real thing -- addresses, nicknames, every learner's history -- and this
+# repository is public. The uebung.db rules above do NOT cover them: a backup is
+# named uebung-<stamp>.db, so it matched nothing and sat one `git add -A` away
+# from being published.
+backups/
+
 # Recovery bundles from a coworking session, kept out of the tree
 *.bundle
 *.bundle.txt
