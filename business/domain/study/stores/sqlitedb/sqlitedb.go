@@ -160,6 +160,48 @@ func Open(ctx context.Context, db *sql.DB) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// Check reports whether the store can actually serve, and is what /healthz is
+// wired to.
+//
+// It reads both tables through the same column lists the real queries use,
+// because "can serve" and "is connected" are different questions and only the
+// first one is worth probing. A ping proves a connection is alive and touches no
+// table, so it answers 200 against a database whose schema this binary cannot
+// use — which is exactly the state a rolled-back deploy leaves behind. deploy.sh
+// then health-checks the rollback, gets its 200, and reports success while every
+// study request 500s.
+//
+// LIMIT 1 keeps it cheap enough to poll, and an empty table is a pass: a fresh
+// deployment has no cards and is perfectly healthy. The question being asked is
+// whether the columns exist and are readable, not whether anyone has studied.
+//
+// See "Schema migrations" in DEPLOYING.md for the failure this exists to make
+// loud rather than silent.
+func (s *Store) Check(ctx context.Context) error {
+	for _, q := range []string{
+		`SELECT ` + progressColumns + ` FROM study_progress LIMIT 1`,
+		`SELECT ` + reviewColumns + ` FROM study_review LIMIT 1`,
+	} {
+		rows, err := s.db.QueryContext(ctx, q)
+		if err != nil {
+			return fmt.Errorf("sqlitedb: health check: %w", err)
+		}
+
+		// Only the query has to succeed; the rows are not read. Closing is still
+		// required — an unclosed *sql.Rows holds the single connection this store
+		// is allowed, and a leak here would deadlock the app on its own probe.
+		err = rows.Err()
+		if cerr := rows.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return fmt.Errorf("sqlitedb: health check: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // migrateProgressToDecks rebuilds a pre-decks study_progress table, moving every
 // existing row into the deck it was implicitly always in.
 //

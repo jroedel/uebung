@@ -182,7 +182,12 @@ func run() error {
 		Static:     studyapp.Assets(),
 		Log:        log,
 		Auth:       authenticator,
-		Health:     db.PingContext,
+		// Not db.PingContext. A ping proves the connection is alive and reads no
+		// table, so it answers 200 against a schema this binary cannot use — the
+		// state a rolled-back deploy leaves behind. studyStore.Check reads the
+		// columns the app actually queries, so that failure is loud and deploy.sh
+		// reports the rollback as failed instead of successful.
+		Health: studyStore.Check,
 	})
 
 	// Routing: the auth app owns /auth/, the study app owns everything else. Go's

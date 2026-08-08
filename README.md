@@ -236,9 +236,11 @@ format is unchanged; a `deck` parameter arrives with the second drill, not befor
 it, so it never has to lie about a deck that cannot be answered.
 
 `GET /api/summary?lang=de` reports deck size, nouns seen, and reviews due now.
-`GET /healthz` reports whether the app can serve: with a store check wired it
-touches the database, so a probe fails rather than returning 200 while every
-study request errors.
+`GET /healthz` reports whether the app can serve, not whether it is listening. It
+selects the app's real column lists from both study tables, deliberately rather
+than pinging: a ping proves a connection is alive and reads nothing, so it answers
+200 against a schema the binary cannot use — which is the state a rolled-back
+deploy leaves behind, and the one case where a wrong health check costs the most.
 
 ### Installing it on a phone
 

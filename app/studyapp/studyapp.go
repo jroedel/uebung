@@ -11,11 +11,14 @@ package studyapp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jroedel/uebung/business/domain/curriculum/curriculumbus"
@@ -73,6 +76,7 @@ type App struct {
 	batchLimit int
 	now        func() time.Time
 	static     fs.FS
+	etags      map[string]string
 	log        *slog.Logger
 	health     func(context.Context) error
 	auth       Authenticator
@@ -112,6 +116,7 @@ func New(cfg Config) *App {
 		vocab:      cfg.Vocab,
 		study:      cfg.Study,
 		curriculum: cfg.Curriculum,
+		etags:      assetETags(cfg.Static),
 		batchLimit: limit,
 		now:        now,
 		static:     cfg.Static,
@@ -150,10 +155,31 @@ func (a *App) Handler() http.Handler {
 //
 // Mapping the path to "/" internally serves the same bytes with a 200 and leaves
 // nothing for a proxy to disagree with.
+// It also gives every asset a content ETag and asks browsers to revalidate.
+//
+// The client is three files that only work as a set: index.html declares the
+// element ids app.js reaches for. Served from an embed.FS they carry no
+// Last-Modified — the modtimes are zero — and http.FileServer adds no validator
+// of its own, which leaves a browser free to apply heuristic freshness and hold
+// any one of them for as long as it likes. A visitor who kept index.html across a
+// release where app.js changed gets a client whose script asks for elements the
+// page no longer has, and the app dies on the first null.
+//
+// "no-cache" is revalidate-before-use, not don't-store: with the ETag, an
+// unchanged file costs a 304 and no body, and a changed one can never be paired
+// with a stale sibling.
 func (a *App) staticHandler() http.Handler {
 	files := http.FileServer(http.FS(a.static))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tag, ok := a.etags[assetName(r.URL.Path)]; ok {
+			// Set before delegating: http.ServeContent reads the ETag back off the
+			// response header to answer If-None-Match, so this is what turns a
+			// revalidation into a 304 rather than a re-send.
+			w.Header().Set("ETag", tag)
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+
 		if r.URL.Path == "/index.html" {
 			// Clone rather than mutate: the request is not ours to modify, and the
 			// logging middleware still reports the path as it was asked for.
@@ -164,6 +190,53 @@ func (a *App) staticHandler() http.Handler {
 
 		files.ServeHTTP(w, r)
 	})
+}
+
+// assetName maps a request path to the name the asset has inside the filesystem.
+// Both "/" and "/index.html" reach the same bytes, so both have to reach the same
+// ETag — otherwise the home page would be the one file with no validator.
+func assetName(path string) string {
+	if path == "/" || path == "" {
+		return "index.html"
+	}
+
+	return strings.TrimPrefix(path, "/")
+}
+
+// assetETags hashes every embedded asset once at construction, so serving one
+// costs no hashing and two files can never disagree about which release they are
+// from. A nil filesystem yields a nil map, and a nil map simply never matches.
+//
+// A read failure drops that file from the map rather than failing construction:
+// the asset then serves without a validator, exactly as it did before, which is a
+// weaker guarantee and not a broken app.
+func assetETags(fsys fs.FS) map[string]string {
+	if fsys == nil {
+		return nil
+	}
+
+	out := map[string]string{}
+
+	_ = fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+
+		b, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			return nil
+		}
+
+		// Half a SHA-256 is far more than enough to distinguish the handful of
+		// files in one build, and it keeps the header short. Quoted because an
+		// ETag without quotes is not a valid one.
+		sum := sha256.Sum256(b)
+		out[name] = `"` + hex.EncodeToString(sum[:8]) + `"`
+
+		return nil
+	})
+
+	return out
 }
 
 // handleHealthz reports whether the app can serve, not merely whether it is

@@ -16,19 +16,25 @@
 # database, and a migration cannot be undone by swapping an executable. So: what
 # does the old build actually do against a database the new build has migrated?
 #
-# For the deck migration the answer is the worst of the available answers. The old
+# For the deck migration the answer was the worst of the available answers. The old
 # build's CREATE TABLE IF NOT EXISTS is a no-op against the rebuilt table, so it
-# starts cleanly. /healthz is wired to db.PingContext, which proves the connection
-# is alive and reads no table, so the probe answers 200. Every study request then
-# fails on a column that no longer exists.
+# starts cleanly. Its /healthz was wired to db.PingContext, which proves the
+# connection is alive and reads no table, so the probe answers 200. Every study
+# request then fails on a column that no longer exists.
 #
 # deploy.sh's health check therefore passes, and reports a healthy rollback, while
 # the app is unusable. That is what this script demonstrates end to end, with the
 # two real binaries, so the failure is something you have seen rather than
 # something you have been told about.
 #
-# Run it whenever a change touches the schema. If the output ever stops matching
-# what is described above, the restore procedure in DEPLOYING.md needs revisiting.
+# /healthz now reads the app's real columns instead of pinging, so a binary that
+# meets a schema it cannot use fails its own probe. But the binary doing the
+# probing after a rollback is the PREVIOUS one, with whatever check it was built
+# with -- so the fix arrives one release later than the problem it solves. That is
+# precisely why this script runs the two real binaries and prints what they did,
+# rather than telling you which case you are in.
+#
+# Run it whenever a change touches the schema, and read the verdict.
 #
 # The database you name is copied first and never written to.
 
@@ -159,5 +165,8 @@ else
 	echo "  The previous binary does not pass its own health check, so deploy.sh"
 	echo "  would report the rollback as failed rather than silently succeeding."
 	echo "  Still restore the database, but the failure at least announces itself."
+	echo
+	echo "  Log tail from the rolled-back binary:"
+	sed 's/^/    /' "$WORK/uebung.prev.log" | tail -n 6
 fi
 echo

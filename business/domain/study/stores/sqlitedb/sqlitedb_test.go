@@ -323,6 +323,49 @@ CREATE TABLE study_progress (
 ) STRICT;
 `
 
+// Check is what /healthz asks, and the whole reason it is not a ping is that a
+// ping passes against a schema this binary cannot use. So the test that matters
+// is the negative one: put the legacy schema in front of it and it must fail.
+//
+// If this ever starts passing, /healthz has gone back to proving only that a
+// connection is alive, and a rolled-back deploy becomes silent again.
+func TestCheckFailsAgainstASchemaTheBinaryCannotUse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "healthy.db")
+	s, db := openWithDB(t, path)
+
+	if err := s.Check(t.Context()); err != nil {
+		t.Fatalf("Check on an empty but correct database: %v", err)
+	}
+
+	// An empty deck is healthy; so is one with cards in it.
+	save(t, s, sampleCard())
+	if err := s.Check(t.Context()); err != nil {
+		t.Fatalf("Check with a card present: %v", err)
+	}
+
+	// A ping still passes here, which is exactly the problem being fixed.
+	if err := db.PingContext(t.Context()); err != nil {
+		t.Fatalf("ping on a healthy database: %v", err)
+	}
+
+	// Now put the pre-decks schema back under it, which is what a rolled-back
+	// binary meets from the other direction: columns it queries are gone.
+	for _, q := range []string{`DROP TABLE study_progress`, `DROP TABLE study_review`, legacySchema} {
+		if _, err := db.ExecContext(t.Context(), q); err != nil {
+			t.Fatalf("reverting the schema (%s): %v", q, err)
+		}
+	}
+
+	if err := db.PingContext(t.Context()); err != nil {
+		t.Fatal("the ping failed, so this test is no longer describing the case it was written for")
+	}
+
+	if err := s.Check(t.Context()); err == nil {
+		t.Fatal("Check passed against a schema missing the columns the app queries -- " +
+			"/healthz would report a rolled-back deploy as healthy")
+	}
+}
+
 // A database written before decks existed must open, and every card in it must
 // come back with its scheduling intact, in the deck it was always implicitly in.
 // Getting this wrong resets a live learner's deck to zero.

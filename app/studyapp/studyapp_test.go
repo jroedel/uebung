@@ -187,6 +187,79 @@ func TestManifestAndIconsAreServed(t *testing.T) {
 // default — that redirect points back at the request that caused it, and the home
 // page becomes an infinite loop. It happened in production: every other route
 // worked and only "/" was unreachable, 50 redirects deep.
+// The client is three files that only work as a set: index.html declares the ids
+// app.js reaches for. Embedded files carry no Last-Modified, so without a
+// validator a browser is free to keep one of them across a release and pair it
+// with a fresh sibling — which is a null dereference on the first line that looks
+// for an element the cached page does not have.
+func TestStaticAssetsCarryAValidatorAndRevalidate(t *testing.T) {
+	h := newServerWithStatic(t)
+
+	// "/" and "/index.html" reach the same bytes and must agree, or the home page
+	// is the one file with no validator.
+	for _, path := range []string{"/", "/index.html", "/app.js", "/styles.css", "/manifest.webmanifest"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+
+			tag := rec.Header().Get("ETag")
+			if tag == "" {
+				t.Fatal("no ETag, so a browser may hold this file for as long as it likes")
+			}
+			if !strings.HasPrefix(tag, `"`) || !strings.HasSuffix(tag, `"`) {
+				t.Errorf("ETag %s is not quoted, which makes it invalid", tag)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+				t.Errorf("Cache-Control = %q, want no-cache", got)
+			}
+
+			// The revalidation has to be cheap, or no-cache would mean re-sending
+			// every asset on every page load.
+			again := httptest.NewRequest(http.MethodGet, path, nil)
+			again.Header.Set("If-None-Match", tag)
+			rec2 := httptest.NewRecorder()
+			h.ServeHTTP(rec2, again)
+
+			if rec2.Code != http.StatusNotModified {
+				t.Errorf("revalidation status = %d, want 304", rec2.Code)
+			}
+			if rec2.Body.Len() != 0 {
+				t.Errorf("304 carried %d bytes of body", rec2.Body.Len())
+			}
+		})
+	}
+}
+
+// Two different files must not share a validator, and the same bytes must always
+// produce the same one — otherwise a 304 could hand back the wrong file, which is
+// worse than no caching at all.
+func TestAssetETagsFollowContent(t *testing.T) {
+	h := newServerWithStatic(t)
+
+	tagFor := func(path string) string {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+		return rec.Header().Get("ETag")
+	}
+
+	index, app, css := tagFor("/"), tagFor("/app.js"), tagFor("/styles.css")
+
+	if index == app || app == css || index == css {
+		t.Errorf("different assets share an ETag: index=%s app=%s css=%s", index, app, css)
+	}
+	if root := tagFor("/index.html"); root != index {
+		t.Errorf(`"/" and "/index.html" disagree: %s vs %s`, index, root)
+	}
+	if again := tagFor("/app.js"); again != app {
+		t.Errorf("the same file produced two ETags: %s then %s", app, again)
+	}
+}
+
 func TestIndexHTMLIsServedNotRedirected(t *testing.T) {
 	h := newServerWithStatic(t)
 

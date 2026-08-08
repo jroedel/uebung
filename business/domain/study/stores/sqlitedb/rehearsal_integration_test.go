@@ -259,15 +259,22 @@ func TestRehearseDeckMigrationAgainstARealDatabase(t *testing.T) {
 // — it is *how* it breaks:
 //
 //   - the old build's CREATE TABLE IF NOT EXISTS is a no-op, so it starts cleanly;
-//   - /healthz is wired to db.PingContext, which proves the connection is alive and
-//     touches no table, so the probe returns 200;
+//   - its /healthz was wired to db.PingContext, which proves the connection is
+//     alive and touches no table, so the probe returns 200;
 //   - every actual study query fails, because the lemma column is gone.
 //
 // So deploy.sh's health check passes and reports a successful rollback while the
-// app is completely unusable. This test asserts that shape deliberately, so the
-// restore procedure in DEPLOYING.md has something holding it in place: if a future
-// change makes the failure loud instead, this test fails and the procedure can be
-// simplified.
+// app is completely unusable.
+//
+// The ping is what this test models, and it deliberately keeps modelling it. The
+// shipping /healthz has moved to sqlitedb.Store.Check, which reads the app's real
+// columns and would fail here — but that only helps once the *previous* binary is
+// one that carries it, and after a rollback the previous binary is the one doing
+// the probing. Until then the hazard is exactly as described above, and the
+// restore procedure in DEPLOYING.md needs something holding it in place.
+//
+// See TestCheckFailsAgainstASchemaTheBinaryCannotUse for the other half: that the
+// new check does catch what the ping misses.
 func TestRollbackToTheOldBinaryIsSilentlyBroken(t *testing.T) {
 	db, _ := rehearsalDB(t)
 
@@ -279,7 +286,9 @@ func TestRollbackToTheOldBinaryIsSilentlyBroken(t *testing.T) {
 		t.Fatalf("Open (which migrates): %v", err)
 	}
 
-	// What the old binary's health check does.
+	// What the old binary's health check does. The new one is checked separately;
+	// this is the deployed one, and it is the deployed one that decides whether a
+	// rollback announces itself.
 	if err := db.PingContext(t.Context()); err != nil {
 		t.Fatalf("ping failed on a migrated database: %v", err)
 	}

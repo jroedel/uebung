@@ -40,7 +40,7 @@ Get these right in the code and the deployment is mostly mechanical.
 | Requirement | Why |
 |---|---|
 | Bind `127.0.0.1:PORT`, configurable | It must be unreachable except through Apache's TLS. Do **not** open a firewall port. |
-| Serve `/healthz`, and have it touch the database | The deploy uses it. "Listening" is not "working". |
+| Serve `/healthz`, and have it **read the columns the app queries** | The deploy uses it, and "listening" is not "working". A `Ping` is not enough: it proves a connection is alive and touches no table, so it answers 200 against a schema the binary cannot use — which is exactly what a rolled-back deploy leaves behind. |
 | Graceful shutdown on **SIGINT** | Both supervisors send SIGINT so in-flight requests drain and SQLite closes cleanly. |
 | `ReadTimeout`, `WriteTimeout`, `IdleTimeout` | `ReadHeaderTimeout` alone lets a connection dawdle once headers are in. |
 | Decide cookie `Secure` **once at startup** | Never from `X-Forwarded-Proto`. Apache leaves `r.TLS` nil and `mod_proxy_http` does not send that header, so inference silently ships session cookies without `Secure`. Derive it from your configured public URL scheme. |
@@ -260,12 +260,25 @@ migration, was the worst of the available answers:
 
 - the old build's `CREATE TABLE IF NOT EXISTS` is a no-op against the rebuilt
   table, so **it starts cleanly**;
-- `/healthz` is wired to `db.PingContext`, which proves the connection is alive
-  and reads no table, so **the probe answers 200**;
+- its `/healthz` was wired to `db.PingContext`, which proves the connection is
+  alive and reads no table, so **the probe answers 200**;
 - every study request then fails on a column that no longer exists.
 
 So `deploy.sh` health-checks a rolled-back app, gets its 200, and reports success
 while the site is unusable. Nothing in the deploy output says otherwise.
+
+**This is fixed going forward, and the fix is one release behind the problem.**
+`/healthz` now runs `sqlitedb.Store.Check`, which selects the app's real column
+lists from both tables, so a binary meeting a schema it cannot use fails its own
+probe. A rollback then fails *loudly* and `deploy.sh` reports it as failed.
+
+The catch is which binary answers. Rolling back restores the **previous** build,
+and the previous build carries whatever health check it was compiled with. So the
+first release after this one still rolls back silently — it is the old binary that
+does the probing — and every release after that does not. Run
+`rehearse-rollback.sh` and read the verdict rather than assuming which case you
+are in; it prints `SILENT ROLLBACK FAILURE CONFIRMED` or `ROLLBACK FAILS LOUDLY`
+from the two binaries actually running.
 
 ### Restoring after a failed migration
 
@@ -310,7 +323,8 @@ The response **body** matters as much as the status code.
 | 404 on everything, site otherwise fine | Document root points somewhere unexpected. |
 | **503** on every path | The `[P]` proxy is configured and the backend is down. |
 | `301` with `Location: ./`, loops | `http.FileServer` + `DirectoryIndex`. Fix both sides. |
-| `/healthz` is **200** but every real page 500s, just after a rolled-back deploy | The binary went back and the database did not. A ping-based health check cannot see this. Restore the database — see *Schema migrations*. |
+| `/healthz` is **200** but every real page 500s, just after a rolled-back deploy | The binary went back and the database did not, and the restored binary's health check is a bare ping, which cannot see it. Restore the database — see *Schema migrations*. |
+| A deploy rolls back and `/healthz` then **fails** on loopback | Same cause, reported honestly: the restored binary reads its real columns and cannot. Restore the database the same way; the difference is that `deploy.sh` told you. |
 | Deploy hangs right after starting the app | Child inherited stdin; add `</dev/null`. |
 | Second `start` blocks forever | Child inherited the `flock` fd; add `9>&-`. |
 | Watchdog starts duplicate instances | PID file holds `setsid`'s pid, not the app's. |
