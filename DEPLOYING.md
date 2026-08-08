@@ -46,6 +46,7 @@ Get these right in the code and the deployment is mostly mechanical.
 | Decide cookie `Secure` **once at startup** | Never from `X-Forwarded-Proto`. Apache leaves `r.TLS` nil and `mod_proxy_http` does not send that header, so inference silently ships session cookies without `Secure`. Derive it from your configured public URL scheme. |
 | Trust `X-Forwarded-For` only behind an explicit flag | Behind Apache `RemoteAddr` is always `127.0.0.1`, so rate limiting on it puts the whole internet in one bucket. Trusting the header unconditionally lets anyone forge a fresh identity per request. Take the **right-most** entry (one proxy hop). |
 | Don't let `http.FileServer` redirect `/index.html` | It answers `301 → ./`, and Apache's `DirectoryIndex` maps `/` onto `index.html` — the two make an infinite loop on your home page. Map the path internally instead. |
+| Give embedded assets an `ETag` and `Cache-Control: no-cache` | `embed.FS` reports zero modtimes, so `http.FileServer` sends no `Last-Modified`, and it never adds an `ETag` of its own. That is a response with **no validator at all**: nothing to revalidate against, and nothing stopping a browser keeping it. See *Shipping a browser client from the binary*. |
 | Secrets from the environment, never flags | A command line is visible in `ps` to every other account on the machine. |
 | Never log the query string | Tokens travel there; logs outlive tokens. |
 | One `*sql.DB` shared by every domain, `MaxOpenConns(1)`, WAL | Two pools on one SQLite file breaks the single-writer assumption. |
@@ -238,6 +239,47 @@ binary from a misconfigured web server. Checking only the public URL reverts goo
 releases whenever Apache is wrong — discarding the release *and* hiding the actual
 fault.
 
+## Shipping a browser client from the binary
+
+`go:embed` makes the HTML, JS and CSS part of the executable, which is most of why
+a deploy here is one file. It also creates a failure the deploy cannot see.
+
+Those files only work as a **set**: the HTML declares the element ids the script
+reaches for. Embedded files report zero modtimes, so `http.FileServer` sends no
+`Last-Modified`, and it adds no `ETag` — a response with no validator, which a
+browser may cache heuristically and can never revalidate. Ship a release that
+changes both files and a visitor can end up holding the *old* page with the *new*
+script. The script asks for an element that page does not have, dereferences null,
+and the app dies before it renders anything. A white screen, for returning users
+only, on exactly the release that reworked the client — and every check you ran
+passed, because a fresh browser is always fine.
+
+So serve every embedded asset with a content `ETag` and `Cache-Control: no-cache`.
+`no-cache` is *revalidate before use*, not *do not store*: with the ETag an
+unchanged file costs a 304 and no body, and a changed one can never be paired with
+a stale sibling. Hash the bytes once at construction rather than per request, and
+set the header **before** delegating to the file server — `http.ServeContent` reads
+the `ETag` back off the response header to answer `If-None-Match`, which is what
+turns the revalidation into a 304 instead of a re-send.
+
+**The release that introduces validators is the one that cannot rely on them.**
+Every page cached by an earlier build has nothing to revalidate against, so this
+fix protects the release after it, never itself. Close that window in the script:
+check for a marker only the current page carries, and if it is missing, reload
+through a query string — a different cache key is the reliable way to make a
+browser go and ask. Do it once, guarded by a session flag, with a readable
+sentence as the fallback, or a genuinely unreachable cache turns into a redirect
+loop.
+
+Verify it the only way that means anything: build the *previous* release's HTML
+against the new script and load that. If the recovery works you will see two
+requests, the second carrying the cache-buster.
+
+This generalises past caching. **Any fix to how a deploy behaves badly has to be
+executed by the binary already in production, so it lands one release after the
+problem it solves.** True of this, true of the health check below. Ship it, then
+say plainly in the notes that the next deploy is still exposed.
+
 ## Schema migrations
 
 **A rollback restores the binary. It does not restore the database, and no
@@ -308,6 +350,25 @@ does the probing — and every release after that does not. Run
 are in; it prints `SILENT ROLLBACK FAILURE CONFIRMED` or `ROLLBACK FAILS LOUDLY`
 from the two binaries actually running.
 
+### A migrating release makes every *other* failure silent too
+
+The blind spot is usually described as a schema problem, which undersells it. Once
+the migration has run, step 11 puts the old binary on the new database **whatever
+went wrong** — the cause does not have to be the schema at all. Any new way for the
+release to fail its health check now ends in the same silent state.
+
+That is worth one concrete example, because it nearly happened here. The release
+carrying the deck migration also added a catalog parsed and validated at start-up:
+a malformed data file, an unknown drill name, a deck gated behind one that does not
+exist, and the server refuses to boot. Loud and correct on its own — but in a
+migrating release it would have refused to boot, been rolled back onto a migrated
+database, and produced a site that answers `/healthz` and 500s on everything, from
+a cause with nothing to do with the migration.
+
+So put a migration in a release that changes as little else as possible, and be
+especially wary of adding new start-up validation alongside one. The validation is
+right; the pairing is what costs you.
+
 ### Restoring after a failed migration
 
 `deploy.sh` backs the database up **after stopping the app and before swapping the
@@ -351,6 +412,7 @@ The response **body** matters as much as the status code.
 | 404 on everything, site otherwise fine | Document root points somewhere unexpected. |
 | **503** on every path | The `[P]` proxy is configured and the backend is down. |
 | `301` with `Location: ./`, loops | `http.FileServer` + `DirectoryIndex`. Fix both sides. |
+| Blank page for **returning** visitors only, new ones fine, right after a release that changed the client | A cached HTML page paired with a freshly fetched script, which then dereferences null on an element that page never had. A hard reload fixes the reporter; the fix is validators — see *Shipping a browser client from the binary*. |
 | `/healthz` is **200** but every real page 500s, just after a rolled-back deploy | The binary went back and the database did not, and the restored binary's health check is a bare ping, which cannot see it. Restore the database — see *Schema migrations*. |
 | A deploy rolls back and `/healthz` then **fails** on loopback | Same cause, reported honestly: the restored binary reads its real columns and cannot. Restore the database the same way; the difference is that `deploy.sh` told you. |
 | Deploy hangs right after starting the app | Child inherited stdin; add `</dev/null`. |
