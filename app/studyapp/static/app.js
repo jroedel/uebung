@@ -134,6 +134,50 @@ const state = {
   suggestion: "", // the nickname currently offered on the skip button
 };
 
+// --- stale page recovery -----------------------------------------------------
+
+// This release is the first to serve the client with an ETag, which means it is
+// also the last one that can meet a page cached without one. Every earlier build
+// sent index.html with no ETag, no Last-Modified and no Cache-Control, so a
+// browser was free to keep it and pair it with a freshly fetched app.js — and this
+// script reaches for elements that page does not contain. Unguarded, that is a
+// TypeError on the first null and a white screen.
+//
+// So: check for something only the current page has, and if it is missing, reload
+// past the cache. A query string is a different cache key, which is the reliable
+// way to make a browser go and ask. Once reloaded, the page carries an ETag and
+// this can never fire again.
+const CURRENT_PAGE_MARKERS = ["decks-panel", "deck-list", "intro-panel", "hints"];
+const RELOAD_FLAG = "uebung-reloaded-past-cache";
+
+// recoverIfStale returns true when it has taken over — the caller must stop.
+function recoverIfStale() {
+  if (CURRENT_PAGE_MARKERS.every((id) => document.getElementById(id))) return false;
+
+  // Only once. If the reload lands on the same stale page the cache is beyond
+  // reach from here, and looping would be worse than saying so.
+  let alreadyTried = true;
+  try {
+    alreadyTried = sessionStorage.getItem(RELOAD_FLAG) === "1";
+    if (!alreadyTried) sessionStorage.setItem(RELOAD_FLAG, "1");
+  } catch (err) {
+    // Private browsing can throw on sessionStorage. Reloading blind risks a
+    // loop, so treat it as already tried and show the message instead.
+    console.error(err);
+  }
+
+  if (alreadyTried) {
+    document.body.textContent =
+      "This page is an old cached copy. Please reload with Ctrl-Shift-R (Cmd-Shift-R on a Mac).";
+
+    return true;
+  }
+
+  location.replace(`${location.pathname}?fresh=${Date.now()}`);
+
+  return true;
+}
+
 // --- sign-in ---------------------------------------------------------------
 
 // start decides what the visitor sees. Every study endpoint now needs a session,
@@ -1083,68 +1127,82 @@ function escapeHtml(s) {
   ));
 }
 
-// Keyboard: ← der, ↑ das, → die. Only while a deck is open — otherwise an arrow
-// key pressed on the shelf or in the introduction would grade a card that is not
-// on screen.
-document.addEventListener("keydown", (e) => {
-  if (!state.deck) return;
+// wire binds every listener and is the last thing that runs.
+//
+// It is a function rather than statements at the end of the file so that
+// recoverIfStale can be consulted first. Half of what it reaches for does not
+// exist on a page from a previous release, and `null.addEventListener` would
+// throw here — before start() ever ran, so the recovery would never get its
+// chance. Nothing below may assume more than the check above verified.
+function wire() {
+  // Keyboard: ← der, ↑ das, → die. Only while a deck is open — otherwise an arrow
+  // key pressed on the shelf or in the introduction would grade a card that is not
+  // on screen.
+  document.addEventListener("keydown", (e) => {
+    if (!state.deck) return;
 
-  const map = { ArrowLeft: "der", ArrowUp: "das", ArrowRight: "die" };
-  const article = map[e.key];
-  if (article) {
-    e.preventDefault();
-    answer(article);
-  }
-});
+    const map = { ArrowLeft: "der", ArrowUp: "das", ArrowRight: "die" };
+    const article = map[e.key];
+    if (article) {
+      e.preventDefault();
+      answer(article);
+    }
+  });
 
-// Tap buttons.
-el.controls.addEventListener("click", (e) => {
-  const btn = e.target.closest(".choice");
-  if (btn) answer(btn.dataset.article);
-});
+  // Tap buttons.
+  el.controls.addEventListener("click", (e) => {
+    const btn = e.target.closest(".choice");
+    if (btn) answer(btn.dataset.article);
+  });
 
-el.againBtn.addEventListener("click", loadBatch);
-el.panelDecksBtn.addEventListener("click", leaveDeck);
+  el.againBtn.addEventListener("click", loadBatch);
+  el.panelDecksBtn.addEventListener("click", leaveDeck);
 
-// The way back to the shelf, from the header while studying and from the intro.
-el.decksBtn.addEventListener("click", leaveDeck);
-el.introBackBtn.addEventListener("click", leaveDeck);
+  // The way back to the shelf, from the header while studying and from the intro.
+  el.decksBtn.addEventListener("click", leaveDeck);
+  el.introBackBtn.addEventListener("click", leaveDeck);
 
-// Rereading the introduction mid-deck. Like renaming, it clears the stack, so any
-// answers held in the browser are sent before they can be lost.
-el.rereadBtn.addEventListener("click", async () => {
-  const deck = state.deck;
-  if (!deck) return;
+  // Rereading the introduction mid-deck. Like renaming, it clears the stack, so
+  // any answers held in the browser are sent before they can be lost.
+  el.rereadBtn.addEventListener("click", async () => {
+    const deck = state.deck;
+    if (!deck) return;
 
-  if (state.results.length) {
-    await flush();
-    state.results = [];
-  }
+    if (state.results.length) {
+      await flush();
+      state.results = [];
+    }
 
-  showIntro(deck);
-});
+    showIntro(deck);
+  });
 
-el.signinForm.addEventListener("submit", requestLink);
+  el.signinForm.addEventListener("submit", requestLink);
 
-el.nicknameForm.addEventListener("submit", submitNickname);
-el.nicknameSkipBtn.addEventListener("click", skipNickname);
-el.renameBtn.addEventListener("click", openRename);
-// Cancelling returns to the shelf rather than restoring the round: the stack was
-// cleared to show the panel, and the answers it held were already sent.
-el.nicknameCancelBtn.addEventListener("click", () => {
-  hide(el.nicknamePanel);
-  showShelf();
-});
+  el.nicknameForm.addEventListener("submit", submitNickname);
+  el.nicknameSkipBtn.addEventListener("click", skipNickname);
+  el.renameBtn.addEventListener("click", openRename);
+  // Cancelling returns to the shelf rather than restoring the round: the stack was
+  // cleared to show the panel, and the answers it held were already sent.
+  el.nicknameCancelBtn.addEventListener("click", () => {
+    hide(el.nicknamePanel);
+    showShelf();
+  });
 
-el.signoutBtn.addEventListener("click", async () => {
-  try {
-    await fetch(API.logout, { method: "POST" });
-  } catch (err) {
-    console.error(err);
-  }
-  // Reload rather than patching state: the whole page is now signed out, and a
-  // fresh start() is the one path that decides what to show.
-  location.assign("/");
-});
+  el.signoutBtn.addEventListener("click", async () => {
+    try {
+      await fetch(API.logout, { method: "POST" });
+    } catch (err) {
+      console.error(err);
+    }
+    // Reload rather than patching state: the whole page is now signed out, and a
+    // fresh start() is the one path that decides what to show.
+    location.assign("/");
+  });
+}
 
-start();
+// The entry point. The stale-page check comes before everything, because on a
+// cached page from an earlier release there is nothing here worth attempting.
+if (!recoverIfStale()) {
+  wire();
+  start();
+}
