@@ -277,6 +277,55 @@ now, and — when nothing is due — when the next review lands, so a finished d
 can say "next review in 16 days" instead of "0 due" and a dead *Next batch*
 button.
 
+## Where you slip
+
+Every graded answer records **which answer the learner actually gave** and **how
+long it took**, alongside the rating. `GET /api/confusion?lang=de&deck=...` turns
+that into a confusion matrix — a dense grid in the deck's own answer order, so
+`cells[i][j]` is the number of times the deck wanted answer *i* and the learner
+said answer *j*, and the diagonal is the times they were right.
+
+The rating cannot answer this. Every miss is `again` whatever was swiped, so a log
+of ratings can count mistakes and never characterise them. The interesting fact
+for someone who has already had German classes is not *how many* they get wrong —
+they know they are shaky — but **which way**: that they turn feminines masculine
+two and a half times as often as the reverse, and so which half of the pair is
+worth the work. That is the one thing practice cannot show you about yourself,
+because practice is what produces it. The same argument is already written out in
+`business/types/roleanswer` for the two-part cards; this applies it to every deck
+that offers a choice.
+
+Answer times are kept for the reason the audience is who it is. Someone
+refreshing German does not become *more* correct on "der Mann" — they were already
+correct. They become faster, and the crossing from deliberate recall to automatic
+retrieval is what the practice is actually for. The client already measured it to
+choose between *easy*, *good* and *hard* and then discarded the number.
+
+Some deliberate choices:
+
+- **The expected answer is not stored.** It is a fact about the deck, not about
+  the learner, and it is already known wherever the deck's material is loaded.
+  Copying it into the log would freeze a mistake in the authored data into every
+  row written before it was fixed. The App layer pairs each counted item back with
+  its answer, exactly as a batch does — which is why the study domain still knows
+  nothing about nouns.
+- **The answer is validated against the deck's own `answers` before it is
+  written.** The log only ever grows, so a reply the deck does not offer cannot be
+  tidied up afterwards; it has to be refused at the door.
+- **Both fields are optional, and empty means "not reported".** A browser holding
+  a cached client from before this release sends neither, and refusing those
+  flushes would cost that learner the round they had just finished. Zero
+  milliseconds is not a reachable answer time, so it is unambiguous.
+- **Neither field touches scheduling.** FSRS sees the rating and nothing else, so
+  two identical grades advance a card identically however fast they were answered.
+- **The grouping is SQL's**, not Go's. The log grows with every swipe a learner
+  ever makes; the matrix is bounded by deck size times answer count.
+
+The columns are added to an existing `study_review` by a guarded `ALTER TABLE` in
+the store's `Open` — neither belongs to a key, so this is a plain in-place add
+rather than the rebuild `study_progress` needed. Rows written before the migration
+take the defaults, which read back as "not reported": true, rather than an answer
+nobody gave.
 `GET /healthz` reports whether the app can serve, not whether it is listening. It
 selects the app's real column lists from both study tables, deliberately rather
 than pinging: a ping proves a connection is alive and reads nothing, so it answers

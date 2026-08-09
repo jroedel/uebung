@@ -559,6 +559,126 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
   color: var(--text);
 }
 
+/* Where you slip.
+ *
+ * A confusion matrix: what the deck wanted down the side, what the learner said
+ * across the top, so the diagonal is where they were right and everything else is
+ * a specific mistake. The direction is the whole reason it exists — "you confuse
+ * der and die" is something every learner already suspects, and "you go one way
+ * four times as often as the other" is the part they cannot find out by
+ * practising. */
+.slips-panel {
+  width: min(94vw, 560px);
+  max-height: min(82vh, 760px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  text-align: left;
+  padding: 24px 22px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.slips-panel h2 { margin: 0 0 4px; }
+.panel .slips-intro { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+
+/* The grid can outgrow a narrow phone once a deck has four answers. It scrolls
+   inside its own box rather than widening the panel. */
+.slips-grid-wrap { overflow-x: auto; margin: 0 0 16px; }
+
+.slips-grid {
+  border-collapse: separate;
+  border-spacing: 4px;
+  /* Tabular figures so a column of counts lines up on the digit rather than
+     wandering, which is most of what makes a matrix scannable. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* The corner carries both axis labels. A matrix whose axes are not named can be
+   read backwards, and read backwards it says the opposite thing. */
+.slips-corner {
+  font-weight: 600;
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--muted);
+  text-align: left;
+  padding: 0 6px 4px 0;
+  white-space: nowrap;
+}
+/* The arrows point along the axis each label names, from the corner they share:
+   the answers given run across the top, the answers wanted run down the side. */
+.slips-axis-col, .slips-axis-row { display: block; }
+.slips-axis-col::after { content: " →"; }
+.slips-axis-row::after { content: " ↓"; }
+
+.slips-col {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--answer, var(--muted));
+  text-align: center;
+  padding-bottom: 2px;
+}
+.slips-row {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--answer, var(--text));
+  text-align: right;
+  padding-right: 6px;
+  white-space: nowrap;
+}
+
+.slips-cell {
+  min-width: 46px;
+  padding: 10px 6px;
+  border-radius: 10px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--bg-2);
+}
+
+/* An off-diagonal cell is tinted by how much of its row went astray that
+   particular way, rather than by the raw count — otherwise a busy row simply
+   looks worse than a quiet one, which is the opposite of what a rate means. */
+.slips-cell[data-answer] {
+  background: color-mix(in srgb, var(--answer) calc(var(--slip-weight, 0) * 60%), var(--bg-2));
+}
+
+/* The diagonal is where the answer was right. Quiet, but present: it is what
+   turns a count of slips into a rate. */
+.slips-hit {
+  color: var(--muted);
+  font-weight: 600;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(154, 163, 199, 0.25);
+}
+
+.slips-rate {
+  padding-left: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.panel .slips-insight {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+/* The one-line version on the end-of-round panel. */
+.panel .slip-line {
+  margin: 0 0 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(154, 163, 199, 0.22);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: left;
+}
+
 .hidden, [hidden] { display: none !important; }
 
 /* Reduced motion.

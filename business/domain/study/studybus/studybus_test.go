@@ -33,7 +33,7 @@ func TestGradeNewItemCreatesReviewedCard(t *testing.T) {
 	b, _, user := newBusiness(t, 20)
 	ctx := context.Background()
 
-	got, err := b.Grade(ctx, user, de, nouns, "Haus", rating.Good, roleanswer.None, anchor)
+	got, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Haus", Rating: rating.Good, Role: roleanswer.None}, anchor)
 	if err != nil {
 		t.Fatalf("Grade: %v", err)
 	}
@@ -67,12 +67,12 @@ func TestGradeAppendsToTheReviewLog(t *testing.T) {
 	b, store, user := newBusiness(t, 20)
 	ctx := context.Background()
 
-	if _, err := b.Grade(ctx, user, de, nouns, "Haus", rating.Good, roleanswer.None, anchor); err != nil {
+	if _, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Haus", Rating: rating.Good, Role: roleanswer.None}, anchor); err != nil {
 		t.Fatalf("first Grade: %v", err)
 	}
 
 	later := anchor.AddDate(0, 0, 3)
-	if _, err := b.Grade(ctx, user, de, nouns, "Haus", rating.Again, roleanswer.None, later); err != nil {
+	if _, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Haus", Rating: rating.Again, Role: roleanswer.None}, later); err != nil {
 		t.Fatalf("second Grade: %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestGradeRecordsTheRoleAnswer(t *testing.T) {
 	b, store, user := newBusiness(t, 20)
 
 	roles := deckid.MustParse("de-roles-basic")
-	if _, err := b.Grade(context.Background(), user, de, roles, "s0001", rating.Again, roleanswer.Incorrect, anchor); err != nil {
+	if _, err := b.Grade(context.Background(), user, de, roles, studybus.GradeInput{Item: "s0001", Rating: rating.Again, Role: roleanswer.Incorrect}, anchor); err != nil {
 		t.Fatalf("Grade: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestDecksDoNotShareCards(t *testing.T) {
 
 	preps := deckid.MustParse("de-preps")
 
-	if _, err := b.Grade(ctx, user, de, nouns, "mit", rating.Good, roleanswer.None, anchor); err != nil {
+	if _, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "mit", Rating: rating.Good, Role: roleanswer.None}, anchor); err != nil {
 		t.Fatalf("Grade in the noun deck: %v", err)
 	}
 
@@ -147,21 +147,21 @@ func TestDecksDoNotShareCards(t *testing.T) {
 
 func TestGradeRejectsInvalidRating(t *testing.T) {
 	b, _, user := newBusiness(t, 20)
-	if _, err := b.Grade(context.Background(), user, de, nouns, "Haus", rating.Rating(0), roleanswer.None, anchor); err == nil {
+	if _, err := b.Grade(context.Background(), user, de, nouns, studybus.GradeInput{Item: "Haus", Rating: rating.Rating(0), Role: roleanswer.None}, anchor); err == nil {
 		t.Fatal("expected an error for an invalid rating")
 	}
 }
 
 func TestGradeRejectsInvalidRoleAnswer(t *testing.T) {
 	b, _, user := newBusiness(t, 20)
-	if _, err := b.Grade(context.Background(), user, de, nouns, "Haus", rating.Good, roleanswer.RoleAnswer(9), anchor); err == nil {
+	if _, err := b.Grade(context.Background(), user, de, nouns, studybus.GradeInput{Item: "Haus", Rating: rating.Good, Role: roleanswer.RoleAnswer(9)}, anchor); err == nil {
 		t.Fatal("expected an error for an invalid role answer")
 	}
 }
 
 func TestGradeRequiresADeck(t *testing.T) {
 	b, _, user := newBusiness(t, 20)
-	if _, err := b.Grade(context.Background(), user, de, deckid.DeckID{}, "Haus", rating.Good, roleanswer.None, anchor); err == nil {
+	if _, err := b.Grade(context.Background(), user, de, deckid.DeckID{}, studybus.GradeInput{Item: "Haus", Rating: rating.Good, Role: roleanswer.None}, anchor); err == nil {
 		t.Fatal("expected an error for a zero deck")
 	}
 }
@@ -204,7 +204,7 @@ func TestBatchPrioritisesDueReviewsOverNewCards(t *testing.T) {
 	deck := []string{"Mann", "Zeit", "Frau", "Tag", "Leben"}
 
 	// Seed a graded card, then make it due by asking for a batch well after its Due.
-	graded, err := b.Grade(ctx, user, de, nouns, "Tag", rating.Good, roleanswer.None, anchor)
+	graded, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Tag", Rating: rating.Good, Role: roleanswer.None}, anchor)
 	if err != nil {
 		t.Fatalf("Grade: %v", err)
 	}
@@ -231,11 +231,11 @@ func TestGradeAgainSchedulesSoonerThanGood(t *testing.T) {
 	b, _, user := newBusiness(t, 20)
 	ctx := context.Background()
 
-	again, err := b.Grade(ctx, user, de, nouns, "Angst", rating.Again, roleanswer.None, anchor)
+	again, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Angst", Rating: rating.Again, Role: roleanswer.None}, anchor)
 	if err != nil {
 		t.Fatalf("Grade again: %v", err)
 	}
-	good, err := b.Grade(ctx, user, de, nouns, "Freund", rating.Good, roleanswer.None, anchor)
+	good, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Freund", Rating: rating.Good, Role: roleanswer.None}, anchor)
 	if err != nil {
 		t.Fatalf("Grade good: %v", err)
 	}
@@ -256,5 +256,90 @@ func TestBatchRequiresUserLanguageAndDeck(t *testing.T) {
 	}
 	if _, err := b.Batch(ctx, userid.Local(), de, deckid.DeckID{}, []string{"Mann"}, anchor, 5); err == nil {
 		t.Fatal("expected an error for a zero deck")
+	}
+}
+
+// The answer a learner gave is what an error profile is built from, so it has to
+// reach the log intact. A rating alone can only count mistakes.
+func TestGradeRecordsTheAnswerAndItsTiming(t *testing.T) {
+	ctx := t.Context()
+	b, store, user := newBusiness(t, 20)
+
+	in := studybus.GradeInput{
+		Item:     "Haus",
+		Rating:   rating.Again,
+		Role:     roleanswer.None,
+		Given:    "der",
+		Answered: 2500 * time.Millisecond,
+	}
+
+	if _, err := b.Grade(ctx, user, de, nouns, in, anchor); err != nil {
+		t.Fatalf("Grade: %v", err)
+	}
+
+	log := store.Reviews()
+	if len(log) != 1 {
+		t.Fatalf("logged reviews: got %d, want 1", len(log))
+	}
+
+	if log[0].Given != "der" {
+		t.Errorf("given: got %q, want %q", log[0].Given, "der")
+	}
+	if log[0].Answered != 2500*time.Millisecond {
+		t.Errorf("answered: got %v, want 2.5s", log[0].Answered)
+	}
+}
+
+// Neither new field takes part in scheduling. FSRS sees the rating and nothing
+// else, so two identical grades must advance a card identically however fast they
+// were answered -- otherwise the diagnostic would be quietly changing the course.
+func TestAnswerTimingDoesNotAffectScheduling(t *testing.T) {
+	ctx := t.Context()
+
+	graded := func(in studybus.GradeInput) studybus.Progress {
+		t.Helper()
+
+		b, _, user := newBusiness(t, 20)
+		p, err := b.Grade(ctx, user, de, nouns, in, anchor)
+		if err != nil {
+			t.Fatalf("Grade: %v", err)
+		}
+
+		return p
+	}
+
+	quick := graded(studybus.GradeInput{Item: "Haus", Rating: rating.Good, Given: "das", Answered: 300 * time.Millisecond})
+	slow := graded(studybus.GradeInput{Item: "Haus", Rating: rating.Good, Given: "das", Answered: 9 * time.Second})
+
+	if !quick.Due.Equal(slow.Due) || quick.Stability != slow.Stability {
+		t.Errorf("timing changed the schedule: quick due=%v stability=%v, slow due=%v stability=%v",
+			quick.Due, quick.Stability, slow.Due, slow.Stability)
+	}
+}
+
+// A negative duration is a clock that went backwards or a subtraction the wrong
+// way round. It is not an answer time, and letting one into an append-only log
+// would skew every average taken over it afterwards.
+func TestGradeRejectsANegativeAnswerTime(t *testing.T) {
+	b, _, user := newBusiness(t, 20)
+
+	in := studybus.GradeInput{
+		Item:     "Haus",
+		Rating:   rating.Good,
+		Answered: -time.Second,
+	}
+
+	if _, err := b.Grade(t.Context(), user, de, nouns, in, anchor); err == nil {
+		t.Fatal("a negative answer time was accepted")
+	}
+}
+
+// Confusions is scoped like every other question in this domain. Asking without a
+// deck is a caller mistake, not an empty result.
+func TestConfusionsRequiresAScope(t *testing.T) {
+	b, _, user := newBusiness(t, 20)
+
+	if _, err := b.Confusions(t.Context(), user, de, deckid.DeckID{}); err == nil {
+		t.Fatal("Confusions accepted a zero deck")
 	}
 }
