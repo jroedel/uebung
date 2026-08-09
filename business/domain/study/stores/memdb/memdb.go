@@ -7,6 +7,7 @@
 package memdb
 
 import (
+	"cmp"
 	"context"
 	"slices"
 	"sync"
@@ -74,6 +75,40 @@ func (s *Store) Save(_ context.Context, p studybus.Progress, rev studybus.Review
 	s.reviews = append(s.reviews, rev)
 
 	return nil
+}
+
+// Confusions tallies how often each item drew each answer, over the reviews of
+// one learner's deck that recorded one.
+//
+// sqlitedb asks the database to group; here the log is a slice, so the tally is a
+// map and the result is sorted before it is returned. The sort is not part of the
+// port's promise — the caller arranges these — but an unsorted map walk would make
+// this store's output vary run to run, and a test that passes four times in five
+// is worse than no test.
+func (s *Store) Confusions(_ context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID) ([]studybus.Confusion, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	counts := make(map[studybus.Confusion]int)
+	for _, rev := range s.reviews {
+		if rev.User != user || rev.Lang != lang || rev.Deck != deck || rev.Given == "" {
+			continue
+		}
+
+		counts[studybus.Confusion{Item: rev.Item, Given: rev.Given}]++
+	}
+
+	out := make([]studybus.Confusion, 0, len(counts))
+	for c, n := range counts {
+		c.Count = n
+		out = append(out, c)
+	}
+
+	slices.SortFunc(out, func(a, b studybus.Confusion) int {
+		return cmp.Or(cmp.Compare(a.Item, b.Item), cmp.Compare(a.Given, b.Given))
+	})
+
+	return out, nil
 }
 
 // Reviews returns a copy of the log in the order it was written, so a test can

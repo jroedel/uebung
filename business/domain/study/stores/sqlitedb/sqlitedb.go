@@ -86,18 +86,33 @@ CREATE TABLE IF NOT EXISTS study_progress (
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS study_review (
-	user_id     TEXT NOT NULL,
-	lang        TEXT NOT NULL,
-	deck        TEXT NOT NULL,
-	item        TEXT NOT NULL,
-	rating      TEXT NOT NULL,
-	role_answer TEXT NOT NULL,
-	reviewed_at TEXT NOT NULL
+	user_id     TEXT    NOT NULL,
+	lang        TEXT    NOT NULL,
+	deck        TEXT    NOT NULL,
+	item        TEXT    NOT NULL,
+	rating      TEXT    NOT NULL,
+	role_answer TEXT    NOT NULL,
+	given       TEXT    NOT NULL DEFAULT '',
+	answer_ms   INTEGER NOT NULL DEFAULT 0,
+	reviewed_at TEXT    NOT NULL
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS study_review_by_time ON study_review (user_id, reviewed_at);
 CREATE INDEX IF NOT EXISTS study_review_by_deck ON study_review (user_id, lang, deck);
 `
+
+// reviewAnswerColumns are the two columns added after the log was already in
+// service, in the order migrateReviewAddAnswer adds them.
+//
+// Each carries a DEFAULT so that the ALTER can fill the rows already there. Every
+// one of those rows was written before the client reported either fact, and the
+// defaults are exactly what the Business model reads as "not reported" — so a
+// pre-migration review comes back saying it does not know what was answered,
+// which is true, rather than claiming an empty answer at zero milliseconds.
+var reviewAnswerColumns = []struct{ name, ddl string }{
+	{"given", `ALTER TABLE study_review ADD COLUMN given TEXT NOT NULL DEFAULT ''`},
+	{"answer_ms", `ALTER TABLE study_review ADD COLUMN answer_ms INTEGER NOT NULL DEFAULT 0`},
+}
 
 // progressColumns is the select list, ordered to match dbProgress field order and
 // the scan in scanProgress. Naming them explicitly rather than using * means
@@ -105,7 +120,7 @@ CREATE INDEX IF NOT EXISTS study_review_by_deck ON study_review (user_id, lang, 
 const progressColumns = `user_id, lang, deck, item, stability, difficulty, state, reps, lapses, last_review, due`
 
 // reviewColumns is the insert list for the log, in dbReview field order.
-const reviewColumns = `user_id, lang, deck, item, rating, role_answer, reviewed_at`
+const reviewColumns = `user_id, lang, deck, item, rating, role_answer, given, answer_ms, reviewed_at`
 
 // dbProgress is one card as persisted: natives and strings only, no strong types.
 // This is what SQLite sees.
@@ -124,6 +139,13 @@ type dbProgress struct {
 }
 
 // dbReview is one logged answer as persisted.
+//
+// Given is a plain string and AnswerMS a plain integer, both carrying the empty
+// value for "the client did not report this". Neither is nullable: the two facts
+// arrive together with the grade or not at all, there is nothing a NULL would say
+// that an empty string and a zero do not, and a nullable column here would put a
+// sql.Null wrapper on the read path of every row in the log's hottest table to
+// encode a distinction nobody can act on.
 type dbReview struct {
 	User       string
 	Lang       string
@@ -131,7 +153,17 @@ type dbReview struct {
 	Item       string
 	Rating     string
 	RoleAnswer string
+	Given      string
+	AnswerMS   int64
 	ReviewedAt string
+}
+
+// dbConfusion is one grouped tally as the database returns it: a card, an answer
+// it drew, and how many times.
+type dbConfusion struct {
+	Item  string
+	Given string
+	Count int
 }
 
 // Store is a SQLite-backed card store.
@@ -155,6 +187,14 @@ func Open(ctx context.Context, db *sql.DB) (*Store, error) {
 
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("sqlitedb: applying study schema: %w", err)
+	}
+
+	// After the schema, not before: on a fresh database the CREATE above already
+	// makes study_review with both columns, and this then finds nothing to do. On
+	// an existing one the CREATE is the no-op and this is what brings the table
+	// up to date.
+	if err := migrateReviewAddAnswer(ctx, db); err != nil {
+		return nil, err
 	}
 
 	return &Store{db: db}, nil
@@ -313,6 +353,76 @@ func hasLegacyProgressTable(ctx context.Context, db *sql.DB) (bool, error) {
 	return columns > 0, nil
 }
 
+// migrateReviewAddAnswer adds the two answer columns to a study_review table that
+// predates them.
+//
+// Unlike the deck migration this is a plain guarded ALTER rather than a rebuild:
+// neither column belongs to a key, and SQLite adds a NOT NULL column with a
+// DEFAULT in place. Each is added only if absent, so running it on every Open is a
+// no-op once the table is current, and a database that has one column but not the
+// other — a crash between the two statements — is completed on the next start.
+//
+// Deliberately not one transaction. Each ALTER is atomic on its own, they are
+// independent, and there is no intermediate state worth rolling back: a table with
+// `given` but not `answer_ms` is simply a table this function has more to do to.
+//
+// Existing rows take the defaults, which is the honest answer. Every review
+// written before this migration happened without either fact being reported, and
+// an empty answer at zero milliseconds is precisely how the Business model spells
+// that.
+func migrateReviewAddAnswer(ctx context.Context, db *sql.DB) error {
+	have, err := reviewColumnSet(ctx, db)
+	if err != nil {
+		return err
+	}
+
+	// No columns at all means no such table. Open applies the schema before
+	// calling this, so that can only be a database this store has not created —
+	// and adding columns to a table that does not exist is not this function's
+	// failure to report.
+	if len(have) == 0 {
+		return nil
+	}
+
+	for _, col := range reviewAnswerColumns {
+		if have[col.name] {
+			continue
+		}
+
+		if _, err := db.ExecContext(ctx, col.ddl); err != nil {
+			return fmt.Errorf("sqlitedb: adding study_review.%s: %w", col.name, err)
+		}
+	}
+
+	return nil
+}
+
+// reviewColumnSet reports which columns study_review currently has, empty when
+// there is no such table.
+func reviewColumnSet(ctx context.Context, db *sql.DB) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM pragma_table_info('study_review')`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitedb: inspecting study_review: %w", err)
+	}
+	defer rows.Close()
+
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("sqlitedb: inspecting study_review: %w", err)
+		}
+
+		have[name] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlitedb: inspecting study_review: %w", err)
+	}
+
+	return have, nil
+}
+
 // List returns every card for a user in one deck, converted to Business models.
 func (s *Store) List(ctx context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID) ([]studybus.Progress, error) {
 	const q = `SELECT ` + progressColumns + ` FROM study_progress WHERE user_id = ? AND lang = ? AND deck = ?`
@@ -385,7 +495,7 @@ ON CONFLICT (user_id, lang, deck, item) DO UPDATE SET
 	last_review = excluded.last_review,
 	due         = excluded.due`
 
-	const appendReview = `INSERT INTO study_review (` + reviewColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	const appendReview = `INSERT INTO study_review (` + reviewColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	r := toDBProgress(p)
 	v := toDBReview(rev)
@@ -407,7 +517,7 @@ ON CONFLICT (user_id, lang, deck, item) DO UPDATE SET
 
 	_, err = tx.ExecContext(ctx, appendReview,
 		v.User, v.Lang, v.Deck, v.Item,
-		v.Rating, v.RoleAnswer, v.ReviewedAt,
+		v.Rating, v.RoleAnswer, v.Given, v.AnswerMS, v.ReviewedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlitedb: logging the review of %q: %w", rev.Item, err)
@@ -515,6 +625,14 @@ func toBusProgress(r dbProgress) (studybus.Progress, error) {
 }
 
 // toDBReview flattens a Business Review to a log row.
+//
+// Answered is stored as whole milliseconds. The Business model carries a
+// time.Duration, which is nanoseconds, and nothing here needs that resolution: an
+// answer is a human pressing a button, the client measures in fractional
+// milliseconds to begin with, and milliseconds keep the column an integer small
+// enough to sum over a year of reviews without care. Truncation is toward zero, so
+// a sub-millisecond duration — which no real answer is — would store as 0 and read
+// back as "not reported".
 func toDBReview(rev studybus.Review) dbReview {
 	return dbReview{
 		User:       rev.User.String(),
@@ -523,6 +641,8 @@ func toDBReview(rev studybus.Review) dbReview {
 		Item:       rev.Item,
 		Rating:     rev.Rating.String(),
 		RoleAnswer: rev.Role.String(),
+		Given:      rev.Given,
+		AnswerMS:   rev.Answered.Milliseconds(),
 		ReviewedAt: formatTime(rev.At),
 	}
 }
@@ -567,15 +687,87 @@ func toBusReview(r dbReview) (studybus.Review, error) {
 		return studybus.Review{}, err
 	}
 
+	// A negative answer time is a corrupt row rather than a slow learner. Nothing
+	// can write one — Grade refuses it and the column is filled from a Duration —
+	// so finding one means the file has been edited by hand or damaged, and the
+	// averages this column exists to feed are better off refusing it than skewed
+	// by it.
+	if r.AnswerMS < 0 {
+		return studybus.Review{}, fmt.Errorf("answer_ms: negative duration %d", r.AnswerMS)
+	}
+
 	return studybus.Review{
-		User:   user,
-		Lang:   lang,
-		Deck:   deck,
-		Item:   r.Item,
-		Rating: rat,
-		Role:   role,
-		At:     at,
+		User:     user,
+		Lang:     lang,
+		Deck:     deck,
+		Item:     r.Item,
+		Rating:   rat,
+		Role:     role,
+		Given:    r.Given,
+		Answered: time.Duration(r.AnswerMS) * time.Millisecond,
+		At:       at,
 	}, nil
+}
+
+// Confusions counts how often each of a learner's cards in one deck drew each
+// answer.
+//
+// The grouping is the database's. This reads an append-only log that grows with
+// every swipe a learner ever makes, and the result is bounded by the deck's size
+// times the number of answers it offers — a few hundred rows for a deck of two
+// hundred cards. Pulling the log into Go to tally it would make the cost scale
+// with how much someone has studied instead of with how much there is to say, and
+// it is the same query whether they have answered a hundred cards or a hundred
+// thousand.
+//
+// Reviews with no recorded answer are excluded rather than grouped under the empty
+// string. They are reviews from before the client reported one, and admitting them
+// would put a column of unattributable counts in the middle of every matrix built
+// from this.
+//
+// study_review_by_deck covers the WHERE, which is what keeps this cheap enough to
+// serve on a page load.
+func (s *Store) Confusions(ctx context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID) ([]studybus.Confusion, error) {
+	const q = `
+SELECT item, given, COUNT(*) AS n
+FROM study_review
+WHERE user_id = ? AND lang = ? AND deck = ? AND given <> ''
+GROUP BY item, given
+ORDER BY item, given`
+
+	rows, err := s.db.QueryContext(ctx, q, user.String(), lang.String(), deck.String())
+	if err != nil {
+		return nil, fmt.Errorf("sqlitedb: counting answers in deck %q: %w", deck, err)
+	}
+	defer rows.Close()
+
+	var out []studybus.Confusion
+	for rows.Next() {
+		var r dbConfusion
+		if err := rows.Scan(&r.Item, &r.Given, &r.Count); err != nil {
+			return nil, fmt.Errorf("sqlitedb: counting answers in deck %q: %w", deck, err)
+		}
+
+		out = append(out, toBusConfusion(r))
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlitedb: counting answers in deck %q: %w", deck, err)
+	}
+
+	return out, nil
+}
+
+// toBusConfusion lifts a grouped row into its Business form. There is nothing to
+// parse: both fields are opaque keys in this domain, and the count is already a
+// number. The converter exists anyway so that the crossing has a name, and so
+// there is one place to change if either field ever gains a type.
+func toBusConfusion(r dbConfusion) studybus.Confusion {
+	return studybus.Confusion{
+		Item:  r.Item,
+		Given: r.Given,
+		Count: r.Count,
+	}
 }
 
 // formatTime encodes an instant for storage. Normalising to UTC first means the

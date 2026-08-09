@@ -100,6 +100,57 @@ type gradeOutcome struct {
 	Item   string `json:"item"`
 	Lemma  string `json:"lemma"`
 	Rating string `json:"rating"` // one of: again, hard, good, easy.
+
+	// Given is what the learner actually answered, in the deck's own vocabulary —
+	// "der", "dativ". Rating says only that a card went badly; this says how, and
+	// it is what an error profile is built from.
+	//
+	// It is validated against the deck's declared answers, so a client cannot file
+	// a reply the deck does not offer. Empty is accepted and means "not reported":
+	// a browser holding a client from before this field existed sends every grade
+	// without it, and refusing those would cost a learner the round they had just
+	// finished.
+	Given string `json:"given,omitempty"`
+
+	// AnswerMS is how long the card was on screen before the learner committed, in
+	// milliseconds. The client already measures it to pick a rating; sending it
+	// keeps the one number this course's audience can actually move.
+	//
+	// Zero means "not reported" — a cached client sends none, and no real answer
+	// rounds to nothing. Negative is refused.
+	AnswerMS int `json:"answer_ms,omitempty"`
+}
+
+// confusionResponse is a learner's error profile for one deck: how often each
+// answer the deck offers was given when each answer was expected.
+//
+// Cells is a dense matrix in Answers order, row-major — Cells[i][j] is the number
+// of times the deck wanted Answers[i] and the learner said Answers[j], so the
+// diagonal is the times they were right. Dense rather than a sparse list of pairs
+// because the client draws a grid and a grid with holes in it has to be filled in
+// somewhere; doing it here means one place rather than every renderer.
+//
+// Answers is echoed back rather than left for the client to remember, so the
+// matrix can be drawn from this response alone and cannot be transposed by a
+// client that disagrees about the order.
+type confusionResponse struct {
+	Lang string `json:"lang"`
+	Deck string `json:"deck"`
+
+	Answers []string `json:"answers"`
+	Cells   [][]int  `json:"cells"`
+
+	// Recorded is how many reviews went into the matrix — the sum of every cell.
+	// It is how a client decides whether it has enough to say anything: a matrix
+	// built from nine answers has a most-confused pair, and naming it would be
+	// telling someone about their German on the strength of three mistakes.
+	//
+	// It is also what distinguishes "nothing recorded yet" from "nothing studied
+	// yet", without this endpoint having to count the reviews it deliberately
+	// leaves out. A learner with progress in the deck and a Recorded of zero has
+	// studied only before answers were logged, and the client already knows their
+	// progress from the shelf.
+	Recorded int `json:"recorded"`
 }
 
 // gradeResponse reports the state of the deck after a flush was applied, so the

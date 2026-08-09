@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -506,7 +507,11 @@ func TestDecksUnlockOnceThePrerequisiteIsCovered(t *testing.T) {
 
 	for i := range locked.RequiresNeed {
 		if _, err := study.Grade(context.Background(), userid.Local(), langcode.German,
-			deckid.DerDieDas, nouns[i].Lemma, rating.Good, roleanswer.None, fixedNow()); err != nil {
+			deckid.DerDieDas, studybus.GradeInput{
+				Item:   nouns[i].Lemma,
+				Rating: rating.Good,
+				Role:   roleanswer.None,
+			}, fixedNow()); err != nil {
 			t.Fatalf("grading %q: %v", nouns[i].Lemma, err)
 		}
 	}
@@ -1264,5 +1269,175 @@ func TestStudyRoutesRequireASignedInLearner(t *testing.T) {
 				t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body)
 			}
 		})
+	}
+}
+
+// getConfusion fetches a deck's error profile.
+func getConfusion(t *testing.T, h http.Handler, deck string) confusionBody {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/confusion?lang=de&deck="+deck, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confusion status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	var got confusionBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding confusion: %v", err)
+	}
+
+	return got
+}
+
+type confusionBody struct {
+	Deck     string   `json:"deck"`
+	Answers  []string `json:"answers"`
+	Cells    [][]int  `json:"cells"`
+	Recorded int      `json:"recorded"`
+}
+
+// cell reads the matrix by answer name rather than by index, so a test says what
+// it means and does not silently pass if the two axes are ever transposed.
+func (c confusionBody) cell(t *testing.T, wanted, said string) int {
+	t.Helper()
+
+	row := slices.Index(c.Answers, wanted)
+	col := slices.Index(c.Answers, said)
+	if row < 0 || col < 0 {
+		t.Fatalf("answers %v have no cell for wanted=%q said=%q", c.Answers, wanted, said)
+	}
+
+	return c.Cells[row][col]
+}
+
+func gradeRaw(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/grade", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	return rec
+}
+
+// The whole point of recording the answer: a learner who calls "Frau" masculine
+// and one who calls it neuter have made different mistakes, and the profile has to
+// tell them apart. "Mann" answered correctly lands on the diagonal.
+func TestConfusionProfileSeparatesTheTwoWaysOfBeingWrong(t *testing.T) {
+	h := newServer(t)
+
+	rec := gradeRaw(t, h, `{"lang":"de","deck":"der-die-das","results":[
+		{"item":"Frau","rating":"again","given":"der","answer_ms":2100},
+		{"item":"Mann","rating":"good","given":"der","answer_ms":800}
+	]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grade status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	got := getConfusion(t, h, "der-die-das")
+
+	if got.Recorded != 2 {
+		t.Errorf("recorded = %d, want 2", got.Recorded)
+	}
+	if n := got.cell(t, "die", "der"); n != 1 {
+		t.Errorf("die answered der = %d, want 1", n)
+	}
+	if n := got.cell(t, "die", "das"); n != 0 {
+		t.Errorf("die answered das = %d, want 0 -- the two mistakes are being conflated", n)
+	}
+	if n := got.cell(t, "der", "der"); n != 1 {
+		t.Errorf("der answered der = %d, want 1 -- the diagonal is what turns counts into a rate", n)
+	}
+}
+
+// The log only ever grows, so an answer the deck does not offer would sit in a
+// learner's profile for good. It has to be refused at the door, and refusing it
+// must not half-apply the flush.
+func TestGradeRejectsAnAnswerTheDeckDoesNotOffer(t *testing.T) {
+	h := newServer(t)
+
+	rec := gradeRaw(t, h, `{"lang":"de","deck":"der-die-das","results":[
+		{"item":"Mann","rating":"good","given":"dativ"}
+	]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("grade status = %d, want 400; body=%s", rec.Code, rec.Body)
+	}
+
+	if decks := getDecks(t, h)[0]; decks.Learned != 0 {
+		t.Errorf("a refused flush still wrote %d cards", decks.Learned)
+	}
+}
+
+// A browser holding a client from before this release sends neither field. Those
+// grades must still apply -- refusing them would cost that learner the round they
+// had just finished -- and must contribute nothing to the profile rather than an
+// answer nobody gave.
+func TestGradeWithoutAnAnswerStillApplies(t *testing.T) {
+	h := newServer(t)
+
+	rec := gradeRaw(t, h, `{"lang":"de","results":[{"lemma":"Mann","rating":"good"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grade status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	if learned := getDecks(t, h)[0].Learned; learned != 1 {
+		t.Fatalf("learned = %d, want 1", learned)
+	}
+
+	got := getConfusion(t, h, "der-die-das")
+	if got.Recorded != 0 {
+		t.Errorf("recorded = %d, want 0 -- an unreported answer was invented", got.Recorded)
+	}
+}
+
+// A negative answer time is a broken clock, not a slow learner, and it would skew
+// every average taken over the column later.
+func TestGradeRejectsANegativeAnswerTime(t *testing.T) {
+	h := newServer(t)
+
+	rec := gradeRaw(t, h, `{"lang":"de","results":[{"item":"Mann","rating":"good","answer_ms":-5}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("grade status = %d, want 400; body=%s", rec.Code, rec.Body)
+	}
+}
+
+// The grid is always the deck's full answer set, even before anything is studied.
+// A client draws the axes from this response alone, so an untouched deck has to
+// answer with a complete empty matrix rather than nothing to draw.
+func TestConfusionOfAnUntouchedDeckIsAFullEmptyGrid(t *testing.T) {
+	got := getConfusion(t, newServer(t), "der-die-das")
+
+	if got.Recorded != 0 {
+		t.Errorf("recorded = %d, want 0", got.Recorded)
+	}
+	if len(got.Answers) != 3 {
+		t.Fatalf("answers = %v, want three", got.Answers)
+	}
+	if len(got.Cells) != len(got.Answers) {
+		t.Fatalf("cells has %d rows for %d answers", len(got.Cells), len(got.Answers))
+	}
+	for i, row := range got.Cells {
+		if len(row) != len(got.Answers) {
+			t.Fatalf("row %d has %d cells for %d answers", i, len(row), len(got.Answers))
+		}
+	}
+}
+
+// A profile is per deck. Answers given in the noun deck must not appear in the
+// preposition deck's grid, which is the same scoping every other study route has.
+func TestConfusionIsScopedToItsDeck(t *testing.T) {
+	h := newServer(t)
+
+	rec := gradeRaw(t, h, `{"lang":"de","deck":"der-die-das","results":[
+		{"item":"Mann","rating":"good","given":"der"}
+	]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grade status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	if got := getConfusion(t, h, "de-praepositionen"); got.Recorded != 0 {
+		t.Errorf("the noun deck's answers leaked into the preposition deck: %+v", got)
 	}
 }

@@ -72,5 +72,95 @@ type Review struct {
 
 	Rating rating.Rating
 	Role   roleanswer.RoleAnswer
-	At     time.Time
+
+	// Given is the answer the learner actually gave, as the deck writes it —
+	// "der", "dativ" — and it is the difference between knowing that someone got
+	// a card wrong and knowing *how*.
+	//
+	// Rating cannot answer that. Every miss is Again whatever was swiped, so a log
+	// of ratings can count mistakes and can never characterise them: it cannot say
+	// that this learner turns feminines masculine far more often than the reverse,
+	// or that they reach for the dative under time pressure. That is the one thing
+	// a learner cannot discover by practising, and it is exactly the diagnostic
+	// roleanswer's package comment argues for on the two-part cards — the same
+	// reasoning applies to every deck that offers a choice.
+	//
+	// It is an opaque string here for the reason Item is: the study domain
+	// schedules keys and grades answers without knowing what kind of thing either
+	// is. What makes it trustworthy is that the App layer validates it against the
+	// deck's own declared answers before it ever arrives, so the log cannot hold a
+	// reply the deck does not offer.
+	//
+	// Empty means "not reported": a browser holding a client from before this
+	// field existed sends every grade without it, and a deck may yet be drilled in
+	// a way that has no discrete answer to record.
+	//
+	// The *expected* answer is deliberately not stored beside it. That is a fact
+	// about the deck rather than about the learner, it is already known wherever
+	// the deck's material is loaded, and copying it into the log would freeze a
+	// mistake in the authored data into every row written before it was fixed.
+	Given string
+
+	// Answered is how long the card was on screen before the learner committed,
+	// and it is the metric this course's audience can actually move. Someone
+	// refreshing German after classes does not become *more* correct on "der
+	// Mann" — they were already correct. They become faster, and the crossing from
+	// deliberate recall to automatic retrieval is what the practice is for.
+	//
+	// The client already measures it to choose between Easy, Good and Hard, then
+	// discards the number. Keeping it means the speed a learner is gaining is
+	// reportable, and that the two thresholds doing the bucketing stop being
+	// constants nobody can check against real answers.
+	//
+	// Zero means "not reported" rather than an instantaneous answer, which is not
+	// a reachable value: a client that measured a real answer never rounds it to
+	// nothing, and only one that never measured sends none.
+	Answered time.Duration
+
+	At time.Time
+}
+
+// GradeInput is one answer as it arrives to be graded: which card, how it went,
+// and the two facts about the answer itself worth keeping.
+//
+// It is a struct rather than five more parameters on Grade because three of the
+// fields are strings and two of those — Item and Given — are interchangeable at a
+// call site without the compiler noticing. Filing a grade against the card the
+// learner answered *with* rather than the one they answered is the kind of bug
+// that reads correctly, tests green on a symmetric fixture, and quietly poisons
+// the log. Named fields make it unwritable.
+//
+// The identity of the learner and the deck stays on Grade's own parameters: those
+// are the same triple every method in this domain is phrased in, and folding them
+// in here would make each call restate what the caller already scoped.
+type GradeInput struct {
+	Item   string
+	Rating rating.Rating
+
+	// Role is how the learner did on the participant-role half of a two-part card.
+	// Decks that do not ask leave it None.
+	Role roleanswer.RoleAnswer
+
+	// Given and Answered carry through to the Review unchanged; see there for what
+	// each is for and why the zero value of each means "not reported".
+	Given    string
+	Answered time.Duration
+}
+
+// Confusion is how often one card drew one answer: the raw material of an error
+// profile, counted by the store rather than assembled in memory.
+//
+// It names the item and not the answer that was expected, because this domain
+// does not know what any item's correct answer is — it grades what it is told and
+// schedules keys. Pairing Item back with its expected answer is the App layer's
+// job, and it is the same pairing a batch already does. That is what lets a
+// confusion matrix be built without the study domain learning what a noun is.
+//
+// Correct answers are included. A matrix showing only mistakes cannot say whether
+// four die-for-der slips happened over ten feminine cards or four hundred, and
+// the diagonal is what turns a count into a rate.
+type Confusion struct {
+	Item  string
+	Given string
+	Count int
 }

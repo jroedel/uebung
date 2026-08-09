@@ -485,3 +485,217 @@ func TestReassignMovesProgressAndTheLog(t *testing.T) {
 		t.Errorf("target owns %d log rows after the claim, want 1 -- the history was left behind", owned)
 	}
 }
+
+// answeredReview is reviewFor plus the two facts a learner's answer carries, which
+// is what every review written by the current client looks like.
+func answeredReview(p studybus.Progress, given string, took time.Duration) studybus.Review {
+	rev := reviewFor(p)
+	rev.Given = given
+	rev.Answered = took
+
+	return rev
+}
+
+// The point of recording the answer is that it survives the round-trip. A rating
+// says a card went badly; only this says the learner reached for "die".
+func TestReviewAnswerRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "answers.db")
+	s, db := openWithDB(t, path)
+
+	card := sampleCard()
+	if err := s.Save(t.Context(), card, answeredReview(card, "die", 1400*time.Millisecond)); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var given string
+	var ms int64
+	err := db.QueryRowContext(t.Context(),
+		`SELECT given, answer_ms FROM study_review WHERE item = ?`, card.Item).Scan(&given, &ms)
+	if err != nil {
+		t.Fatalf("reading the logged answer: %v", err)
+	}
+
+	if given != "die" {
+		t.Errorf("given: got %q, want %q", given, "die")
+	}
+	if ms != 1400 {
+		t.Errorf("answer_ms: got %d, want 1400", ms)
+	}
+}
+
+// A grade from a browser holding a client older than this release reports neither
+// fact. It must still be logged: refusing it would cost that learner the round
+// they had just finished, and "not reported" is a true thing to record.
+func TestReviewWithNoReportedAnswerIsStillLogged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "silent.db")
+	s, db := openWithDB(t, path)
+
+	card := sampleCard()
+	save(t, s, card) // reviewFor leaves Given and Answered zero.
+
+	if n := countReviews(t, db, card.Item); n != 1 {
+		t.Fatalf("logged rows: got %d, want 1", n)
+	}
+
+	// And it contributes nothing to a matrix, rather than a phantom answer.
+	got, err := s.Confusions(t.Context(), card.User, card.Lang, card.Deck)
+	if err != nil {
+		t.Fatalf("Confusions: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("unreported answers leaked into the profile: %+v", got)
+	}
+}
+
+// The log is append-only, so the profile is a tally over every answer ever given
+// to a card -- not just the latest one.
+func TestConfusionsCountsEveryAnswer(t *testing.T) {
+	s := open(t)
+
+	card := sampleCard()
+	for _, given := range []string{"die", "die", "der", "das"} {
+		if err := s.Save(t.Context(), card, answeredReview(card, given, time.Second)); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	got, err := s.Confusions(t.Context(), card.User, card.Lang, card.Deck)
+	if err != nil {
+		t.Fatalf("Confusions: %v", err)
+	}
+
+	want := map[string]int{"die": 2, "der": 1, "das": 1}
+	if len(got) != len(want) {
+		t.Fatalf("rows: got %d (%+v), want %d", len(got), got, len(want))
+	}
+
+	for _, c := range got {
+		if c.Item != card.Item {
+			t.Errorf("item: got %q, want %q", c.Item, card.Item)
+		}
+		if c.Count != want[c.Given] {
+			t.Errorf("%q: got %d, want %d", c.Given, c.Count, want[c.Given])
+		}
+	}
+}
+
+// A profile is one learner's, in one deck. The same item answered in another deck
+// or by another person must not bleed into it -- the whole diagnostic is worthless
+// if it mixes two people's mistakes.
+func TestConfusionsAreScopedToOneLearnerAndDeck(t *testing.T) {
+	s := open(t)
+
+	mine := sampleCard()
+	if err := s.Save(t.Context(), mine, answeredReview(mine, "die", time.Second)); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// The same item key, in the deck next door.
+	otherDeck := sampleCard()
+	otherDeck.Deck = deckid.MustParse("de-praepositionen")
+	if err := s.Save(t.Context(), otherDeck, answeredReview(otherDeck, "dativ", time.Second)); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := s.Confusions(t.Context(), mine.User, mine.Lang, mine.Deck)
+	if err != nil {
+		t.Fatalf("Confusions: %v", err)
+	}
+
+	if len(got) != 1 || got[0].Given != "die" {
+		t.Fatalf("the neighbouring deck leaked in: %+v", got)
+	}
+}
+
+// A database written before the answer columns existed is the state every live
+// deployment is in. Open has to bring it forward without touching the history
+// already there.
+func TestOpenAddsTheAnswerColumnsToAnExistingLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prior.db")
+	db := rawDB(t, path)
+
+	// The study_review table exactly as it shipped before this change.
+	const priorLog = `
+CREATE TABLE study_review (
+	user_id     TEXT NOT NULL,
+	lang        TEXT NOT NULL,
+	deck        TEXT NOT NULL,
+	item        TEXT NOT NULL,
+	rating      TEXT NOT NULL,
+	role_answer TEXT NOT NULL,
+	reviewed_at TEXT NOT NULL
+) STRICT;`
+
+	if _, err := db.ExecContext(t.Context(), priorLog); err != nil {
+		t.Fatalf("creating the pre-answer log: %v", err)
+	}
+
+	card := sampleCard()
+	_, err := db.ExecContext(t.Context(),
+		`INSERT INTO study_review (user_id, lang, deck, item, rating, role_answer, reviewed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		card.User.String(), card.Lang.String(), card.Deck.String(), card.Item,
+		rating.Good.String(), roleanswer.None.String(),
+		card.LastReview.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		t.Fatalf("seeding a pre-answer review: %v", err)
+	}
+
+	s, err := sqlitedb.Open(t.Context(), db)
+	if err != nil {
+		t.Fatalf("Open on a pre-answer database: %v", err)
+	}
+
+	// The history survives...
+	if n := countReviews(t, db, card.Item); n != 1 {
+		t.Fatalf("logged rows after migration: got %d, want 1", n)
+	}
+
+	// ...reading as "not reported" rather than as an answer nobody gave...
+	got, err := s.Confusions(t.Context(), card.User, card.Lang, card.Deck)
+	if err != nil {
+		t.Fatalf("Confusions: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("a migrated row invented an answer: %+v", got)
+	}
+
+	// ...and the columns are now there to be written.
+	if err := s.Save(t.Context(), card, answeredReview(card, "der", 900*time.Millisecond)); err != nil {
+		t.Fatalf("Save after migration: %v", err)
+	}
+
+	got, err = s.Confusions(t.Context(), card.User, card.Lang, card.Deck)
+	if err != nil {
+		t.Fatalf("Confusions after migration: %v", err)
+	}
+	if len(got) != 1 || got[0].Given != "der" || got[0].Count != 1 {
+		t.Fatalf("post-migration answer not recorded: %+v", got)
+	}
+}
+
+// Open runs on every start. The second pass must find both columns present and
+// leave the log alone rather than failing on a duplicate ALTER.
+func TestOpenIsIdempotentAfterAddingTheAnswerColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "twice.db")
+	s, db := openWithDB(t, path)
+
+	card := sampleCard()
+	if err := s.Save(t.Context(), card, answeredReview(card, "das", 700*time.Millisecond)); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	again, err := sqlitedb.Open(t.Context(), db)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+
+	got, err := again.Confusions(t.Context(), card.User, card.Lang, card.Deck)
+	if err != nil {
+		t.Fatalf("Confusions after reopen: %v", err)
+	}
+	if len(got) != 1 || got[0].Given != "das" {
+		t.Fatalf("reopening disturbed the log: %+v", got)
+	}
+}

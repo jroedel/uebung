@@ -18,6 +18,8 @@ const API = {
   grade: "/api/grade",
   summary: (lang, deck) =>
     `/api/summary?lang=${encodeURIComponent(lang)}&deck=${encodeURIComponent(deck)}`,
+  confusion: (lang, deck) =>
+    `/api/confusion?lang=${encodeURIComponent(lang)}&deck=${encodeURIComponent(deck)}`,
   me: "/auth/me",
   requestLink: "/auth/request",
   logout: "/auth/logout",
@@ -39,30 +41,33 @@ const API = {
 // gender that puts das up; for case it puts the genitive up, which is by some
 // distance the least common of the three a trigger can govern.
 //
-// The colour slot each answer borrows is deliberately shared with its direction —
-// left is always the "der" colour, up the "das" colour, right the "die" colour —
-// so the two drills look like one app, and so the introduction's colour-coded
-// groups (see styles.css) line up with the buttons they describe.
+// Nothing here says what an answer looks like. Each one carries its own name into
+// the markup as a data-answer, and the stylesheet maps that name to a colour —
+// "der" is blue because it is the masculine, "akkusativ" is amber because it is
+// the accusative, and neither depends on which button it sits on. That is the
+// change from the arrangement this replaced, where the colours were positional
+// slots and a case deck reused the gender palette: the noun deck teaches blue =
+// der over 213 cards, and the deck after it must not spend that association on
+// something else. It is also what leaves room for a deck that asks for a case and
+// a gender at once, since the two are drawn from different families.
 const DRILLS = {
-  // `short` is what the drop-zone hints say. The left and right hints live in the
-  // narrow gutter beside the card, which fits "der" and not "Akkusativ" — the full
-  // word ends up drawn over by the card. They are peripheral cues read out of the
-  // corner of the eye, so an abbreviation loses nothing, and the buttons below
+  // `short` is what the drop-zone hints say. They are peripheral cues read out of
+  // the corner of the eye, so an abbreviation loses nothing, and the buttons below
   // still carry the full name.
   "article-3way": {
     prompt: "der, die, or das?",
     answers: [
-      { answer: "der", dir: "left",  label: "der", short: "der", slot: "der" },
-      { answer: "das", dir: "up",    label: "das", short: "das", slot: "das" },
-      { answer: "die", dir: "right", label: "die", short: "die", slot: "die" },
+      { answer: "der", dir: "left",  label: "der", short: "der" },
+      { answer: "das", dir: "up",    label: "das", short: "das" },
+      { answer: "die", dir: "right", label: "die", short: "die" },
     ],
   },
   "case-3way": {
     prompt: "which case?",
     answers: [
-      { answer: "akkusativ", dir: "left",  label: "Akkusativ", short: "akk", slot: "der" },
-      { answer: "genitiv",   dir: "up",    label: "Genitiv",   short: "gen", slot: "das" },
-      { answer: "dativ",     dir: "right", label: "Dativ",     short: "dat", slot: "die" },
+      { answer: "akkusativ", dir: "left",  label: "Akkusativ", short: "akk" },
+      { answer: "genitiv",   dir: "up",    label: "Genitiv",   short: "gen" },
+      { answer: "dativ",     dir: "right", label: "Dativ",     short: "dat" },
     ],
   },
 };
@@ -91,10 +96,11 @@ function answerForDir(dir) {
   return spec ? spec.answer : null;
 }
 
-// slotFor is the colour class an answer wears — see DRILLS.
-function slotFor(answer) {
-  const spec = drill().answers.find((a) => a.answer === answer);
-  return spec ? spec.slot : "";
+// tint paints one element in an answer's own colour by naming the answer on it.
+// The stylesheet owns the mapping (see the [data-answer] rules), so this file
+// never has to know that the dative is cyan.
+function tint(node, answer) {
+  if (answer) node.dataset.answer = answer;
 }
 
 // labelFor is how an answer is written on screen: "der" stays lowercase because
@@ -178,6 +184,17 @@ const el = {
   introClosing: document.getElementById("intro-closing"),
   introStartBtn: document.getElementById("intro-start-btn"),
   introBackBtn: document.getElementById("intro-back-btn"),
+  slipsBtn: document.getElementById("slips-btn"),
+  slipsPanel: document.getElementById("slips-panel"),
+  slipsHeading: document.getElementById("slips-heading"),
+  slipsIntro: document.getElementById("slips-intro"),
+  slipsGrid: document.getElementById("slips-grid"),
+  slipsInsight: document.getElementById("slips-insight"),
+  slipsCount: document.getElementById("slips-count"),
+  slipsBackBtn: document.getElementById("slips-back-btn"),
+  slipLine: document.getElementById("slip-line"),
+  slipSummary: document.getElementById("slip-summary"),
+  slipMoreBtn: document.getElementById("slip-more-btn"),
   footer: document.getElementById("footer"),
   hintBox: document.getElementById("hints"),
   hints: {
@@ -213,7 +230,11 @@ const state = {
 // past the cache. A query string is a different cache key, which is the reliable
 // way to make a browser go and ask. Once reloaded, the page carries an ETag and
 // this can never fire again.
-const CURRENT_PAGE_MARKERS = ["decks-panel", "deck-list", "intro-panel", "hints"];
+// Every id here is one this release's page has and some earlier page did not, so
+// the list grows with each release that adds markup app.js reaches for. Missing
+// any of them means the browser has paired an old page with this script, and
+// wire() would throw on the first null before start() ever ran.
+const CURRENT_PAGE_MARKERS = ["decks-panel", "deck-list", "intro-panel", "hints", "slips-panel"];
 const RELOAD_FLAG = "uebung-reloaded-past-cache";
 
 // recoverIfStale returns true when it has taken over — the caller must stop.
@@ -530,6 +551,7 @@ function hideEverything() {
   hide(el.nicknamePanel);
   hide(el.decksPanel);
   hide(el.introPanel);
+  hide(el.slipsPanel);
   hide(el.controls);
   hide(el.stats);
   hide(el.hintBox);
@@ -667,6 +689,18 @@ function buildDeckCard(deck) {
   read.addEventListener("click", () => showIntro(deck));
   actions.appendChild(read);
 
+  // The error profile, offered only once there is any history to profile. On an
+  // untouched deck it would be a link to an empty grid, which is a worse first
+  // impression than no link at all.
+  if (deck.learned > 0) {
+    const slips = document.createElement("button");
+    slips.className = "linkish";
+    slips.type = "button";
+    slips.textContent = "Where you slip";
+    slips.addEventListener("click", () => showSlips(deck, "shelf"));
+    actions.appendChild(slips);
+  }
+
   item.appendChild(actions);
 
   return item;
@@ -748,6 +782,237 @@ function showIntro(deck) {
   if (canStart) el.introStartBtn.onclick = () => startDeck(deck);
 
   show(el.introPanel);
+}
+
+// --- where you slip -----------------------------------------------------------
+
+// MIN_SLIPS is how many recorded answers a deck needs before the profile says
+// anything about a pattern.
+//
+// A grid built from nine answers has a largest cell, and naming it would be
+// telling someone about their German on the strength of two mistakes. The grid
+// itself is drawn whatever the count — seeing it fill up is the point — but the
+// sentence that interprets it waits until it is worth trusting.
+const MIN_SLIPS = 30;
+
+// answerSpecs returns a deck's answers as the drill defines them, or, for a deck
+// this build cannot draw, a plain list built from the deck's own answer names.
+//
+// The profile is worth reading for a deck whose drill has not shipped yet — the
+// server counts answers regardless of what can render them — so this degrades to
+// the raw names rather than refusing.
+function answerSpecs(deck, answers) {
+  const spec = DRILLS[deck.drill];
+  if (spec) return answers.map((a) => spec.answers.find((s) => s.answer === a) || { answer: a, label: a, short: a });
+
+  return answers.map((a) => ({ answer: a, label: a, short: a }));
+}
+
+// showSlips draws a deck's error profile.
+//
+// from is where "back" should return to: the shelf, or the deck being studied.
+// The panel is reachable from both, and a learner who opened it mid-round should
+// not be dumped out of the round to close it.
+async function showSlips(deck, from) {
+  hideEverything();
+  el.slipsHeading.textContent = "Where you slip";
+  el.slipsIntro.textContent = deck.title;
+  el.slipsGrid.replaceChildren();
+  el.slipsInsight.textContent = "";
+  el.slipsCount.textContent = "Loading…";
+  show(el.slipsPanel);
+
+  el.slipsBackBtn.textContent = from === "deck" ? "Back to the deck" : "Back to all decks";
+  el.slipsBackBtn.onclick = () => (from === "deck" ? startDeck(deck) : showShelf());
+
+  let profile = null;
+  try {
+    const res = await fetch(API.confusion(API.lang, deck.id), { headers: { Accept: "application/json" } });
+    if (res.status === 401) {
+      showSignIn();
+
+      return;
+    }
+    if (!res.ok) throw new Error(`confusion failed: ${res.status}`);
+    profile = await res.json();
+  } catch (err) {
+    console.error(err);
+    el.slipsCount.textContent = "Couldn’t load your answers. Check your connection and try again.";
+
+    return;
+  }
+
+  renderSlips(deck, profile);
+}
+
+// renderSlips draws the grid and the sentence under it.
+function renderSlips(deck, profile) {
+  const specs = answerSpecs(deck, profile.answers || []);
+  const cells = profile.cells || [];
+
+  el.slipsGrid.replaceChildren();
+
+  // Nothing recorded yet. Say which of the two reasons it is, because they call
+  // for opposite things: a learner who has never opened the deck should go and
+  // study, and one with months of history behind them is looking at a feature
+  // that started counting after they did.
+  if (!profile.recorded) {
+    el.slipsCount.textContent = deck.learned > 0
+      ? "Your earlier rounds were answered before this deck started recording which answer you gave. From now on they count."
+      : "Nothing here yet — answer a round and this fills in.";
+
+    return;
+  }
+
+  const head = document.createElement("tr");
+  head.appendChild(cornerCell());
+  for (const spec of specs) {
+    const th = document.createElement("th");
+    th.className = "slips-col";
+    th.scope = "col";
+    th.textContent = spec.short;
+    tint(th, spec.answer);
+    head.appendChild(th);
+  }
+  el.slipsGrid.appendChild(head);
+
+  specs.forEach((rowSpec, i) => {
+    const tr = document.createElement("tr");
+
+    const rowHead = document.createElement("th");
+    rowHead.className = "slips-row";
+    rowHead.scope = "row";
+    rowHead.textContent = rowSpec.label;
+    tint(rowHead, rowSpec.answer);
+    tr.appendChild(rowHead);
+
+    const total = (cells[i] || []).reduce((sum, n) => sum + n, 0);
+
+    specs.forEach((colSpec, j) => {
+      const td = document.createElement("td");
+      const n = (cells[i] || [])[j] || 0;
+      td.textContent = n || "·";
+
+      // The diagonal is where the answer was right. It is shown rather than
+      // blanked because it is what turns a count of slips into a rate: four
+      // die-for-der mistakes mean something different over ten feminine cards
+      // than over four hundred.
+      if (i === j) {
+        td.className = "slips-cell slips-hit";
+      } else {
+        td.className = "slips-cell";
+        // Weight by how much of this row went astray this particular way, so a
+        // busy row does not simply look worse than a quiet one.
+        if (n > 0) td.style.setProperty("--slip-weight", String(Math.min(1, n / Math.max(1, total))));
+        if (n > 0) tint(td, colSpec.answer);
+      }
+
+      tr.appendChild(td);
+    });
+
+    // The row's own accuracy, which is the reading most people want first.
+    const rate = document.createElement("td");
+    rate.className = "slips-rate";
+    rate.textContent = total > 0 ? `${Math.round(((cells[i] || [])[i] || 0) / total * 100)}%` : "—";
+    tr.appendChild(rate);
+
+    el.slipsGrid.appendChild(tr);
+  });
+
+  el.slipsCount.textContent = `${profile.recorded} answer${profile.recorded === 1 ? "" : "s"} recorded in this deck.`;
+  el.slipsInsight.textContent = slipInsight(specs, cells, profile.recorded);
+}
+
+// cornerCell is the empty top-left of the grid, which carries the two axis labels
+// because a matrix with unlabelled axes can be read backwards.
+function cornerCell() {
+  const th = document.createElement("th");
+  th.className = "slips-corner";
+  th.scope = "col";
+
+  const wanted = document.createElement("span");
+  wanted.className = "slips-axis-row";
+  wanted.textContent = "it was";
+
+  const said = document.createElement("span");
+  said.className = "slips-axis-col";
+  said.textContent = "you said";
+
+  th.append(said, wanted);
+
+  return th;
+}
+
+// biggestSlip finds the largest off-diagonal cell: the mistake this learner makes
+// most. Returns null when there is none.
+function biggestSlip(specs, cells) {
+  let best = null;
+
+  specs.forEach((_, i) => {
+    specs.forEach((__, j) => {
+      if (i === j) return;
+      const n = (cells[i] || [])[j] || 0;
+      if (n > 0 && (!best || n > best.count)) best = { row: i, col: j, count: n };
+    });
+  });
+
+  return best;
+}
+
+// slipInsight is the sentence under the grid: what the grid says, in words.
+//
+// It names the pair and then its mirror, because the direction is the whole
+// point. "You confuse der and die" is something every learner already suspects;
+// "you call feminines masculine four times as often as the reverse" is a fact
+// about this person that they cannot get any other way, and it says which half of
+// the pair to actually work on.
+function slipInsight(specs, cells, recorded) {
+  if (recorded < MIN_SLIPS) return "Keep going — a few more rounds and this will show which way you tend to go wrong.";
+
+  const worst = biggestSlip(specs, cells);
+  if (!worst) return "No mistakes recorded in this deck. That is not nothing.";
+
+  const wanted = specs[worst.row].label;
+  const said = specs[worst.col].label;
+  const mirror = (cells[worst.col] || [])[worst.row] || 0;
+
+  const lead = `Your commonest slip: “${wanted}” answered ${said}, ${worst.count} time${worst.count === 1 ? "" : "s"}.`;
+
+  if (mirror === 0) return `${lead} The reverse has never happened.`;
+
+  const ratio = worst.count / mirror;
+  if (ratio < 1.5) return `${lead} It goes the other way about as often, so the pair is the problem rather than one side of it.`;
+
+  return `${lead} The reverse happened ${mirror} time${mirror === 1 ? "" : "s"} — you go this way ${ratio.toFixed(1)}× as often.`;
+}
+
+// showSlipSummary puts one line about the profile on the end-of-round panel.
+//
+// It is fetched after the flush, so it already includes the round just played.
+// A failure is silent: this is an aside on a panel whose job is to report the
+// round, and it must never be the reason that panel looks broken.
+async function showSlipSummary(deck) {
+  hide(el.slipLine);
+  if (!deck) return;
+
+  try {
+    const res = await fetch(API.confusion(API.lang, deck.id), { headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(`confusion failed: ${res.status}`);
+
+    const profile = await res.json();
+    if (!profile.recorded || profile.recorded < MIN_SLIPS) return;
+
+    const specs = answerSpecs(deck, profile.answers || []);
+    const worst = biggestSlip(specs, profile.cells || []);
+    if (!worst) return;
+
+    el.slipSummary.textContent =
+      `Across every round: “${specs[worst.row].label}” answered ${specs[worst.col].label} ${worst.count} times.`;
+    el.slipMoreBtn.onclick = () => showSlips(deck, "deck");
+    show(el.slipLine);
+  } catch (err) {
+    console.error(err);
+  }
 }
 
 // startDeck opens a deck for study.
@@ -899,8 +1164,12 @@ function buildCard(data, behind) {
   const card = document.createElement("div");
   card.className = "card" + (behind ? " behind" : "");
 
+  // Each band names its own answer, which is what gives it its colour, and its own
+  // direction, which is what puts it in a corner. Two attributes rather than one
+  // class because the two facts are independent: an answer keeps its colour if it
+  // is ever moved to a different swipe.
   const bands = drill().answers
-    .map((a) => `<div class="band ${a.slot}">${escapeHtml(a.label)}</div>`)
+    .map((a) => `<div class="band" data-answer="${escapeHtml(a.answer)}" data-dir="${a.dir}">${escapeHtml(a.label)}</div>`)
     .join("");
 
   card.innerHTML = `
@@ -926,7 +1195,7 @@ function renderControls() {
   el.controls.replaceChildren();
   for (const a of spec.answers) {
     const btn = document.createElement("button");
-    btn.className = `choice ${a.slot}`;
+    btn.className = "choice";
     btn.type = "button";
     btn.dataset.answer = a.answer;
     btn.textContent = a.label;
@@ -942,7 +1211,7 @@ function renderControls() {
     const hint = el.hints[a.dir];
     if (hint) {
       hint.textContent = a.short;
-      hint.dataset.answer = a.answer;
+      tint(hint, a.answer);
     }
   }
 }
@@ -978,7 +1247,24 @@ function answer(given) {
   const correct = given === card.answer;
   const elapsed = performance.now() - state.shownAt;
   const rating = correct ? gradeBySpeed(elapsed) : "again";
-  state.results.push({ item: card.item, rating });
+
+  // What was answered and how long it took travel with the grade.
+  //
+  // Both were measured here and thrown away: the rating collapses a miss to
+  // "again" whatever was swiped, and the milliseconds were used to pick between
+  // easy, good and hard and then dropped. Neither is recoverable afterwards — the
+  // log only grows — and between them they are the two things a learner at this
+  // level actually wants to know. Which way they are wrong is what the error
+  // profile is built from; how fast they answer is the number that moves as
+  // recall becomes automatic.
+  state.results.push({
+    item: card.item,
+    rating,
+    given,
+    // Whole milliseconds, non-negative: the server refuses a negative time, and a
+    // fractional one would be false precision on a person pressing a button.
+    answer_ms: Math.max(0, Math.round(elapsed)),
+  });
 
   revealFeedback(correct, card);
 
@@ -1045,7 +1331,13 @@ function revealFeedback(correct, card) {
   fb.textContent = correct ? `Richtig — ${said}` : said;
   gloss.textContent = card.gloss;
 
-  const band = top.querySelector(`.band.${slotFor(card.answer)}`);
+  // The card takes the correct answer's colour, which is what the feedback line
+  // is drawn in. On a miss that line used to be red — the failure colour, on a
+  // card already outlined in red, contradicting the answer's own colour on the
+  // band beside it. The outline says how it went; the answer says what it is.
+  tint(top, card.answer);
+
+  const band = top.querySelector(`.band[data-answer="${cssEscape(card.answer)}"]`);
   if (band) band.style.opacity = "1";
 }
 
@@ -1206,6 +1498,12 @@ async function finishBatch() {
   el.panelBody.textContent = `${correct}/${state.results.length} correct. ${tail}`.trim();
   renderMisses();
   show(el.panel);
+
+  // The round is reported from what is already in hand; the pattern across every
+  // round needs the server. Deliberately not awaited — the panel is complete
+  // without it, and a slow or failed request must not hold up the one screen the
+  // learner is waiting on.
+  showSlipSummary(state.deck);
 }
 
 // Every card answered wrong this round, in the order it came up. A miss is
@@ -1243,7 +1541,8 @@ function renderMisses() {
 
     const head = document.createElement("div");
     const word = document.createElement("span");
-    word.className = `miss-word ${slotFor(card.answer)}`;
+    word.className = "miss-word";
+    tint(word, card.answer);
     word.textContent = card.phrase ? card.phrase : `${card.answer} ${card.item}`;
     const gloss = document.createElement("span");
     gloss.className = "miss-gloss";
@@ -1368,6 +1667,14 @@ function escapeHtml(s) {
   ));
 }
 
+// cssEscape quotes a value for use inside a selector. Answers are authored data
+// rather than anything a learner types, so nothing here is currently exotic — but
+// a selector built from data is worth escaping on principle rather than on
+// inspection of today's decks.
+function cssEscape(s) {
+  return window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s).replace(/["\\]/g, "\\$&");
+}
+
 // wire binds every listener and is the last thing that runs.
 //
 // It is a function rather than statements at the end of the file so that
@@ -1420,6 +1727,22 @@ function wire() {
     }
 
     showIntro(deck);
+  });
+
+  // The profile, from the header while studying. Like rereading the introduction
+  // it clears the stack, so anything answered but not yet sent goes first — and
+  // sending it means the grid the learner is about to look at includes the round
+  // they are in the middle of.
+  el.slipsBtn.addEventListener("click", async () => {
+    const deck = state.deck;
+    if (!deck) return;
+
+    if (state.results.length) {
+      await flush();
+      state.results = [];
+    }
+
+    showSlips(deck, "deck");
   });
 
   el.signinForm.addEventListener("submit", requestLink);

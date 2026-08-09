@@ -17,8 +17,6 @@ import (
 
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
-	"github.com/jroedel/uebung/business/types/rating"
-	"github.com/jroedel/uebung/business/types/roleanswer"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/fsrs"
 )
@@ -46,6 +44,15 @@ type Storer interface {
 	// or a scored review of a card that never advanced. An implementation must
 	// apply both or neither.
 	Save(ctx context.Context, p Progress, rev Review) error
+
+	// Confusions counts, for one learner's deck, how often each item drew each
+	// answer, over every review that recorded one. Rows whose answer was never
+	// reported are left out rather than grouped under the empty string: they are
+	// reviews the log cannot characterise, and counting them as a distinct reply
+	// would put a phantom column in every matrix built from this.
+	//
+	// Order is not promised; the caller arranges them.
+	Confusions(ctx context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID) ([]Confusion, error)
 }
 
 // Business is the study core: a Storer, the FSRS scheduler it grades against, and
@@ -143,29 +150,37 @@ func (b *Business) Batch(ctx context.Context, user userid.UserID, lang langcode.
 	return out, nil
 }
 
-// Grade applies a self-graded rating to one card at time now, advances its memory
+// Grade applies a self-graded answer to one card at time now, advances its memory
 // model through the scheduler, persists the result together with a record of the
 // answer, and returns the updated Progress. An item the user has never seen starts
 // from a fresh card, so grading a new item is how it first enters the store.
 //
-// role reports how the learner did on the participant-role half of a two-part
-// card. Decks that do not ask pass roleanswer.None.
-func (b *Business) Grade(ctx context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID, item string, r rating.Rating, role roleanswer.RoleAnswer, now time.Time) (Progress, error) {
-	if user.IsZero() || lang.IsZero() || deck.IsZero() || item == "" {
+// What was answered and how long it took ride along on in and are written to the
+// log untouched; neither takes part in scheduling, which is FSRS's business and
+// depends on the rating alone.
+func (b *Business) Grade(ctx context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID, in GradeInput, now time.Time) (Progress, error) {
+	if user.IsZero() || lang.IsZero() || deck.IsZero() || in.Item == "" {
 		return Progress{}, fmt.Errorf("studybus: grade requires a user, language, deck, and item")
 	}
 
-	if !r.Valid() {
+	if !in.Rating.Valid() {
 		return Progress{}, fmt.Errorf("studybus: invalid rating")
 	}
 
-	if !role.Valid() {
+	if !in.Role.Valid() {
 		return Progress{}, fmt.Errorf("studybus: invalid role answer")
 	}
 
-	current, found, err := b.store.Get(ctx, user, lang, deck, item)
+	// A negative duration is a broken clock or a client subtracting the wrong way
+	// round, and either way it is not an answer time. Refusing it here keeps the
+	// log arithmetic-safe for everything that will later average it.
+	if in.Answered < 0 {
+		return Progress{}, fmt.Errorf("studybus: answer time cannot be negative")
+	}
+
+	current, found, err := b.store.Get(ctx, user, lang, deck, in.Item)
 	if err != nil {
-		return Progress{}, fmt.Errorf("studybus: loading card %q: %w", item, err)
+		return Progress{}, fmt.Errorf("studybus: loading card %q: %w", in.Item, err)
 	}
 
 	if !found {
@@ -173,28 +188,51 @@ func (b *Business) Grade(ctx context.Context, user userid.UserID, lang langcode.
 			User: user,
 			Lang: lang,
 			Deck: deck,
-			Item: item,
+			Item: in.Item,
 			Due:  now,
 		}
 	}
 
-	reviewed := fromFSRSCard(current, b.sched.Review(toFSRSCard(current), now, toFSRSRating(r)))
+	reviewed := fromFSRSCard(current, b.sched.Review(toFSRSCard(current), now, toFSRSRating(in.Rating)))
 
 	rev := Review{
-		User:   user,
-		Lang:   lang,
-		Deck:   deck,
-		Item:   item,
-		Rating: r,
-		Role:   role,
-		At:     now,
+		User:     user,
+		Lang:     lang,
+		Deck:     deck,
+		Item:     in.Item,
+		Rating:   in.Rating,
+		Role:     in.Role,
+		Given:    in.Given,
+		Answered: in.Answered,
+		At:       now,
 	}
 
 	if err := b.store.Save(ctx, reviewed, rev); err != nil {
-		return Progress{}, fmt.Errorf("studybus: saving card %q: %w", item, err)
+		return Progress{}, fmt.Errorf("studybus: saving card %q: %w", in.Item, err)
 	}
 
 	return reviewed, nil
+}
+
+// Confusions reports how often each of a learner's cards in one deck drew each
+// answer, for every review that recorded one.
+//
+// It is a pass-through by design. The counting is the store's — it is a GROUP BY
+// over a log that only grows, and pulling every row into Go to tally it would
+// scale with how much someone has studied rather than with how much there is to
+// say. What this domain adds is the guarantee that the question is asked in terms
+// of a learner, a language and a deck, like every other question here.
+func (b *Business) Confusions(ctx context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID) ([]Confusion, error) {
+	if user.IsZero() || lang.IsZero() || deck.IsZero() {
+		return nil, fmt.Errorf("studybus: confusions requires a user, language, and deck")
+	}
+
+	out, err := b.store.Confusions(ctx, user, lang, deck)
+	if err != nil {
+		return nil, fmt.Errorf("studybus: reading the answer log for deck %q: %w", deck, err)
+	}
+
+	return out, nil
 }
 
 // Progress returns all of a user's scheduling records for one deck, for summaries

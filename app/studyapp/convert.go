@@ -3,13 +3,16 @@ package studyapp
 import (
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/jroedel/uebung/business/domain/curriculum/curriculumbus"
+	"github.com/jroedel/uebung/business/domain/study/studybus"
 	"github.com/jroedel/uebung/business/domain/trigger/triggerbus"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/rating"
+	"github.com/jroedel/uebung/business/types/roleanswer"
 	"github.com/jroedel/uebung/foundation/errs"
 )
 
@@ -40,18 +43,18 @@ func toBusDeck(raw string) (deckid.DeckID, error) {
 	return deckid.Parse(raw)
 }
 
-// gradedResult is one validated flush entry: a card's key and its parsed rating.
-type gradedResult struct {
-	item   string
-	rating rating.Rating
-}
-
 // toBusGradeRequest validates a whole flush. It reports the language, the deck and
 // every malformed result in one pass, so a client that sent three bad ratings
 // learns all three at once rather than one retry at a time. A missing key or an
 // unknown rating name fails its row; a row index is included so the client can
 // point at the offender.
-func toBusGradeRequest(req gradeRequest) (langcode.LangCode, deckid.DeckID, []gradedResult, error) {
+//
+// The answer a learner gave is deliberately *not* validated here. Whether "die" is
+// a reply this deck offers is a question about the deck, and a converter that took
+// the catalog as an argument would be doing the handler's composing for it — so
+// this parses the shape and toBusGradeAnswers, which the handler calls once it has
+// the deck in hand, checks the meaning.
+func toBusGradeRequest(req gradeRequest) (langcode.LangCode, deckid.DeckID, []studybus.GradeInput, error) {
 	var fes errs.FieldErrors
 
 	lang, err := langcode.Parse(req.Lang)
@@ -60,7 +63,7 @@ func toBusGradeRequest(req gradeRequest) (langcode.LangCode, deckid.DeckID, []gr
 	deck, err := toBusDeck(req.Deck)
 	fes.Add("deck", err)
 
-	results := make([]gradedResult, 0, len(req.Results))
+	results := make([]studybus.GradeInput, 0, len(req.Results))
 	for i, r := range req.Results {
 		item, err := gradedItem(r)
 		if err != nil {
@@ -74,10 +77,103 @@ func toBusGradeRequest(req gradeRequest) (langcode.LangCode, deckid.DeckID, []gr
 			continue
 		}
 
-		results = append(results, gradedResult{item: item, rating: rat})
+		// A negative time is a clock that went backwards or a subtraction the wrong
+		// way round. Either way it is not an answer time, and admitting it would
+		// poison every average taken over the column later.
+		if r.AnswerMS < 0 {
+			fes.Addf("results", "row %d (%s): answer_ms cannot be negative", i, item)
+			continue
+		}
+
+		results = append(results, studybus.GradeInput{
+			Item:   item,
+			Rating: rat,
+
+			// roleanswer.None: no deck in the course asks for a participant role
+			// yet. The two-part cards that have a role half are still to be written.
+			Role: roleanswer.None,
+
+			Given:    r.Given,
+			Answered: time.Duration(r.AnswerMS) * time.Millisecond,
+		})
 	}
 
 	return lang, deck, results, fes.ErrorOrNil()
+}
+
+// toBusGradeAnswers checks each row's reported answer against the ones the deck
+// actually offers, and is the guard that keeps the log worth reading.
+//
+// An answer that no deck accepts is not a harmless extra field: it becomes a
+// column in that learner's error profile forever, and the profile is the whole
+// reason the answer is recorded. The log is append-only, so a bad row cannot be
+// tidied up afterwards — it has to be refused at the door.
+//
+// The empty string passes. It is what a browser holding a client from before this
+// field existed sends, and rejecting the flush would cost that learner the round
+// they had just finished to gain a fact about it that was never going to be there.
+func toBusGradeAnswers(results []studybus.GradeInput, answers []string) error {
+	var fes errs.FieldErrors
+
+	for i, res := range results {
+		if res.Given == "" || slices.Contains(answers, res.Given) {
+			continue
+		}
+
+		fes.Addf("results", "row %d (%s): %q is not one of this deck's answers", i, res.Item, res.Given)
+	}
+
+	return fes.ErrorOrNil()
+}
+
+// fromBusConfusionResponse builds a learner's error profile for one deck.
+//
+// It is where the two halves meet. The study domain counted how often each item
+// drew each answer and has no idea what any of them should have been; expected is
+// the deck's own material, which this layer already loads to serve a batch. Pairing
+// them here is the same composition handleBatch does, and it is why neither domain
+// has to learn about the other.
+//
+// A count whose item is no longer in the deck, or whose answer the deck no longer
+// offers, is dropped rather than forced into the grid. Both are the ordinary
+// consequence of authored data being corrected after someone studied it, and a
+// matrix is a statement about a deck as it stands.
+func fromBusConfusionResponse(lang langcode.LangCode, d curriculumbus.Deck, counts []studybus.Confusion, expected map[string]string) confusionResponse {
+	answers := slices.Clone(d.Answers)
+
+	index := make(map[string]int, len(answers))
+	for i, a := range answers {
+		index[a] = i
+	}
+
+	cells := make([][]int, len(answers))
+	for i := range cells {
+		cells[i] = make([]int, len(answers))
+	}
+
+	recorded := 0
+	for _, c := range counts {
+		row, ok := index[expected[c.Item]]
+		if !ok {
+			continue
+		}
+
+		col, ok := index[c.Given]
+		if !ok {
+			continue
+		}
+
+		cells[row][col] += c.Count
+		recorded += c.Count
+	}
+
+	return confusionResponse{
+		Lang:     lang.String(),
+		Deck:     d.ID.String(),
+		Answers:  answers,
+		Cells:    cells,
+		Recorded: recorded,
+	}
 }
 
 // gradedItem resolves a row's card key from the two field names the wire accepts.

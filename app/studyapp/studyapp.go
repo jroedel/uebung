@@ -29,7 +29,6 @@ import (
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/drillkind"
 	"github.com/jroedel/uebung/business/types/langcode"
-	"github.com/jroedel/uebung/business/types/roleanswer"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/errs"
 )
@@ -139,6 +138,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/batch", a.handleBatch)
 	mux.HandleFunc("POST /api/grade", a.handleGrade)
 	mux.HandleFunc("GET /api/summary", a.handleSummary)
+	mux.HandleFunc("GET /api/confusion", a.handleConfusion)
 	mux.HandleFunc("GET /healthz", a.handleHealthz)
 
 	if a.static != nil {
@@ -644,13 +644,20 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Now that the deck is known, the reported answers can be checked against the
+	// ones it offers. This is refused before anything is written: the log only
+	// ever grows, so an answer the deck does not accept would sit in this
+	// learner's error profile for good.
+	if err := toBusGradeAnswers(results, d.Answers); err != nil {
+		writeError(w, err)
+		return
+	}
+
 	now := a.now()
 
 	applied := 0
-	for _, res := range results {
-		// roleanswer.None: no deck in the course asks for a participant role yet.
-		// The two-part cards that have a role half are still to be written.
-		if _, err := a.study.Grade(ctx, user, lang, d.ID, res.item, res.rating, roleanswer.None, now); err != nil {
+	for _, in := range results {
+		if _, err := a.study.Grade(ctx, user, lang, d.ID, in, now); err != nil {
 			writeServerError(w, err)
 			return
 		}
@@ -717,6 +724,89 @@ func (a *App) handleSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, sum)
+}
+
+// handleConfusion reports a learner's error profile for one deck: how often each
+// answer was given when each answer was wanted.
+//
+// This is the one endpoint that reads the review log rather than the scheduling
+// state, and it is why the log is kept. Progress says where a card stands now;
+// only the history can say that this learner turns feminines masculine far more
+// often than the reverse — which is the fact a person cannot discover by
+// practising, because practising is what produces it.
+//
+// Ungated, like the summary and for the same reason: it is a statement about the
+// learner's own answers, which in a deck they have never opened is an empty grid.
+// Refusing to draw it would tell a client nothing it could not already infer.
+func (a *App) handleConfusion(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	lang, err := toBusLang(q.Get("lang"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	deckID, err := toBusDeck(q.Get("deck"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	ctx := r.Context()
+
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	if a.curriculum == nil {
+		writeServerError(w, errors.New("studyapp: no curriculum wired"))
+		return
+	}
+
+	d, err := a.curriculum.Deck(ctx, lang, deckID)
+	if err != nil {
+		writeError(w, fmt.Errorf("unknown deck %q", deckID))
+		return
+	}
+
+	counts, err := a.study.Confusions(ctx, user, lang, d.ID)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+
+	// The deck's own material is what turns a count of answers into a matrix: the
+	// study domain knows an item drew "die" and cannot know that "der" was wanted.
+	// This is the same pairing handleBatch does, from the same source, which is
+	// what keeps the two from ever disagreeing about a card's answer.
+	expected, err := a.deckAnswers(ctx, d)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, fromBusConfusionResponse(lang, d, counts, expected))
+}
+
+// deckAnswers maps every item in a deck to the answer it expects.
+//
+// It is deckCards narrowed to the one field this needs. Going through the same
+// function means the correct answer shown on a card and the correct answer a
+// matrix is built against are read from one place and cannot drift.
+func (a *App) deckAnswers(ctx context.Context, d curriculumbus.Deck) (map[string]string, error) {
+	_, cards, err := a.deckCards(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+
+	answers := make(map[string]string, len(cards))
+	for item, c := range cards {
+		answers[item] = c.Answer
+	}
+
+	return answers, nil
 }
 
 // computeSummary tallies deck size, cards ever learned, and cards due right now.

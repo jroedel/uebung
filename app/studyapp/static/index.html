@@ -48,6 +48,7 @@
       <button class="linkish" id="decks-btn" type="button">← All decks</button>
       <span id="deck-title"></span>
       <button class="linkish" id="reread-btn" type="button">How this deck works</button>
+      <button class="linkish" id="slips-btn" type="button">Where you slip</button>
     </p>
   </header>
 
@@ -73,6 +74,13 @@
         <h3 class="misses-title">Worth another look</h3>
         <ul class="miss-list" id="miss-list"></ul>
       </div>
+      <!-- One line about the pattern across every round so far, shown only once
+           there is enough history for it to mean anything. The full grid is a
+           screen of its own; this is the pointer to it. -->
+      <p class="slip-line" id="slip-line" hidden>
+        <span id="slip-summary"></span>
+        <button class="linkish" id="slip-more-btn" type="button">See where you slip</button>
+      </p>
       <button class="primary" id="again-btn">Next batch</button>
       <p class="muted">
         <button class="linkish" id="panel-decks-btn" type="button">Back to all decks</button>
@@ -97,6 +105,23 @@
       <button class="primary" id="intro-start-btn">Start studying</button>
       <p class="muted">
         <button class="linkish" id="intro-back-btn" type="button">Back to all decks</button>
+      </p>
+    </section>
+
+    <!-- The error profile: which answer this learner gives when each answer is
+         wanted, over every round they have played in this deck. It is the one
+         thing practice cannot show you about yourself, because practice is what
+         produces it. -->
+    <section class="panel slips-panel" id="slips-panel" hidden>
+      <h2 id="slips-heading">Where you slip</h2>
+      <p class="slips-intro" id="slips-intro"></p>
+      <div class="slips-grid-wrap">
+        <table class="slips-grid" id="slips-grid"></table>
+      </div>
+      <p class="slips-insight" id="slips-insight"></p>
+      <p class="muted" id="slips-count"></p>
+      <p class="muted">
+        <button class="linkish" id="slips-back-btn" type="button">Back to all decks</button>
       </p>
     </section>
 
@@ -148,13 +173,17 @@
        / dativ in these same three positions — but they are written out here so the
        page is never blank before the first batch arrives. -->
   <nav class="controls" id="controls" hidden aria-label="Answer">
-    <button class="choice der" type="button" data-answer="der">der<small>◀ swipe left</small></button>
-    <button class="choice das" type="button" data-answer="das">das<small>▲ swipe up</small></button>
-    <button class="choice die" type="button" data-answer="die">die<small>swipe right ▶</small></button>
+    <button class="choice" type="button" data-answer="der">der<small>◀ swipe left</small></button>
+    <button class="choice" type="button" data-answer="das">das<small>▲ swipe up</small></button>
+    <button class="choice" type="button" data-answer="die">die<small>swipe right ▶</small></button>
   </nav>
 
   <footer class="footer" id="footer" hidden>
-    <p>Swipe or use ← ↑ → keys. Green = right, red = wrong. Progress saves automatically.</p>
+    <!-- "Green = right, red = wrong" was true of the card's outline and false of
+         everything else on screen, now that each answer carries its own colour and
+         green is also the neuter. Naming the outline says the same thing without
+         claiming the whole palette. -->
+    <p>Swipe or use ← ↑ → keys. The card outlines green when you are right. Progress saves automatically.</p>
   </footer>
 
   <script src="app.js"></script>
