@@ -1,17 +1,83 @@
+/* The palette is three separate families, and keeping them separate is the whole
+   point.
+
+   It used to be one set of three colours used as positional slots — first answer,
+   second, third — which let a case deck borrow the gender palette on the argument
+   that neither meant anything about the other. That argument holds for a
+   stylesheet and fails for a learner: the noun deck spends 213 cards teaching
+   "blue = der", and the deck after it then paints Akkusativ in the same blue in
+   the same position. Colour-coded gender is a classroom convention precisely
+   because it does stick, and overwriting it is worse than never using it.
+
+   So a colour is bound to a grammatical concept for the life of the app, not to
+   the slot an answer happens to occupy. Akkusativ is amber in the preposition
+   deck, in the verb deck, and in every deck after them. Position is still chosen
+   separately — the two commonest answers take the horizontal swipes and the rarest
+   takes the vertical flick — and the two decisions no longer have to agree.
+
+   It also leaves room. A fourth case and a fourth direction are both coming, and
+   a deck that asks for a case *and* a gender on one card — "akkusativ-feminin" —
+   can mix a case hue with a gender hue because they are drawn from different
+   families rather than competing for the same three. */
 :root {
   --bg: #0f1226;
   --bg-2: #171a33;
   --surface: #1e2340;
   --text: #eef1ff;
   --muted: #9aa3c7;
-  --der: #4f8cff;   /* masculine — blue */
-  --die: #ff5d8f;   /* feminine — rose */
-  --das: #37d29b;   /* neuter — green */
+
+  /* Gender — the German classroom convention, and already what 213 cards have
+     taught. Unchanged on purpose. */
+  --gender-der: #4f8cff;   /* masculine — blue */
+  --gender-die: #ff5d8f;   /* feminine  — rose */
+  --gender-das: #37d29b;   /* neuter    — green */
+
+  /* Case — its own family, sited in the hue gaps the gender trio leaves: amber
+     ~38°, cyan ~190°, violet ~275°, against blue 215° / green 158° / rose 340°.
+
+     Nominativ is reserved rather than used. Nothing asks for it today; the first
+     adjective-ending or relative-pronoun deck will, and picking it now is what
+     stops that deck from having to renumber everything. It is deliberately the
+     unsaturated one — the base form is the absence of marking. */
+  --case-nom: #b9c2e8;   /* steel  — reserved */
+  --case-akk: #f59e0b;   /* amber  */
+  --case-dat: #22d3ee;   /* cyan   */
+  --case-gen: #a855f7;   /* violet */
+
+  /* Verdict — whether the answer was right, which is a different question from
+     what the answer was. Separating these is what lets a missed card show its
+     correct answer in that answer's own colour while the card itself is outlined
+     in red. */
   --right: #37d29b;
   --wrong: #ff6b6b;
+
+  /* The app's own accent, for links, primary buttons and progress. It is the same
+     blue as the masculine, which is a coincidence worth being able to break: this
+     token exists so that changing the product's accent does not change what a
+     gender looks like, and vice versa. */
+  --accent: #4f8cff;
+
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
   --radius: 20px;
+
+  /* The card's footprint, shared by the stack and by the hint frame that has to
+     line up with it. One definition, because two that drifted apart would put the
+     cues somewhere other than beside the card — which is the bug this replaced. */
+  --deck-w: min(88vw, 360px);
+  --deck-h: min(52vh, 440px);
 }
+
+/* Every answer the app can draw, mapped to its concept's colour. This is the only
+   place the mapping lives: markup carries `data-answer="akkusativ"` and the
+   stylesheet decides what that looks like, so adding a deck is adding rules here
+   rather than teaching the script about colour. */
+[data-answer="der"] { --answer: var(--gender-der); }
+[data-answer="die"] { --answer: var(--gender-die); }
+[data-answer="das"] { --answer: var(--gender-das); }
+[data-answer="nominativ"] { --answer: var(--case-nom); }
+[data-answer="akkusativ"] { --answer: var(--case-akk); }
+[data-answer="dativ"]     { --answer: var(--case-dat); }
+[data-answer="genitiv"]   { --answer: var(--case-gen); }
 
 @media (prefers-color-scheme: light) {
   :root {
@@ -74,27 +140,39 @@ body {
   min-height: 60vh;
 }
 
-/* Drop-zone hints */
+/* Drop-zone hints.
+ *
+ * They belong to the card, not to the page. Pinned to the stage they were drawn
+ * *underneath* the card — the card is min(88vw, 360px) wide and centred, so on a
+ * 430px phone "der" and "die" rendered as "de" and "ie", and on a wide screen they
+ * stranded a thousand pixels from the thing they annotate.
+ *
+ * The two horizontal cues sit just inside the card's own left and right edges,
+ * because a phone does not have 40px of gutter to spare beside a 360px card and
+ * never will. The vertical one sits above the card, where there is room and where
+ * it cannot collide with the answer bands along the card's top edge. All three are
+ * at the card's vertical middle or clear of it, which is blank on every card. */
 .hint {
   position: absolute;
   font-weight: 800;
   font-size: 15px;
   letter-spacing: 1px;
   text-transform: lowercase;
-  color: var(--muted);
+  color: var(--answer, var(--muted));
   opacity: 0.35;
   transition: opacity 0.15s, transform 0.15s;
   pointer-events: none;
+  white-space: nowrap;
 }
-.hint-left  { left: 18px;  top: 50%; transform: translateY(-50%); color: var(--der); }
-.hint-right { right: 18px; top: 50%; transform: translateY(-50%); color: var(--die); }
-.hint-up    { top: 14px;   left: 50%; transform: translateX(-50%); color: var(--das); }
+.hint-left  { left: 14px;  top: 50%; transform: translateY(-50%); }
+.hint-right { right: 14px; top: 50%; transform: translateY(-50%); }
+.hint-up    { bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); }
 .hint.active { opacity: 1; }
 
 .deck {
   position: relative;
-  width: min(88vw, 360px);
-  height: min(52vh, 440px);
+  width: var(--deck-w);
+  height: var(--deck-h);
 }
 
 /* Cards */
@@ -181,7 +259,8 @@ body {
 .card.show-example .example,
 .card.show-example .example-en { opacity: 1; }
 
-/* Correct-article tint band shown while dragging */
+/* Correct-answer tint band shown on the reveal. Each wears its own concept's
+   colour through --answer, set by the data-answer on the band itself. */
 .card .band {
   position: absolute;
   top: 14px;
@@ -191,10 +270,12 @@ body {
   font-size: 14px;
   opacity: 0;
   transition: opacity 0.1s;
+  color: var(--answer);
+  border: 2px solid var(--answer);
 }
-.card .band.der { left: 14px;  color: var(--der); border: 2px solid var(--der); }
-.card .band.die { right: 14px; color: var(--die); border: 2px solid var(--die); }
-.card .band.das { left: 50%; transform: translateX(-50%); color: var(--das); border: 2px solid var(--das); }
+.card .band[data-dir="left"]  { left: 14px; }
+.card .band[data-dir="right"] { right: 14px; }
+.card .band[data-dir="up"]    { left: 50%; transform: translateX(-50%); }
 
 /* The case drill, sized for its own words.
  *
@@ -217,10 +298,16 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
    answer worth reading back, so it gets the same weight the article does. */
 .miss-note { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
 
+/* The verdict is the outline; the answer is the text.
+ *
+ * These used to be the same channel, and on a miss the correct answer — the one
+ * string on the screen the learner has to take away — was drawn in the failure
+ * red, contradicting the gender colour shown on the band beside it in the same
+ * frame. Now the border says how it went and the answer is always in its own
+ * concept's colour, whether or not it was reached. */
 .card.correct { outline: 3px solid var(--right); }
 .card.incorrect { outline: 3px solid var(--wrong); }
-.card.correct .feedback { color: var(--right); }
-.card.incorrect .feedback { color: var(--wrong); }
+.card.answered .feedback { color: var(--answer, var(--text)); }
 
 /* Controls */
 .controls {
@@ -247,9 +334,19 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
 }
 .choice small { font-size: 10px; font-weight: 600; opacity: 0.7; }
 .choice:active { transform: scale(0.95); }
-.choice.der { background: var(--der); }
-.choice.die { background: var(--die); }
-.choice.das { background: var(--das); }
+.choice { background: var(--answer, var(--muted)); }
+
+/* The answer buttons are the primary control and had no visible focus state at
+   all, which made the whole drill unreachable by keyboard for anyone who needs to
+   see where they are. The ring is drawn outside the button so it reads against
+   the button's own fill. */
+.choice:focus-visible,
+.primary:focus-visible,
+.linkish:focus-visible {
+  outline: 3px solid var(--text);
+  outline-offset: 3px;
+  border-radius: 16px;
+}
 
 /* Panels */
 .panel {
@@ -286,12 +383,9 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
 .miss-list li { margin: 0 0 14px; }
 .miss-list li:last-child { margin-bottom: 0; }
 
-/* The headword carries its correct article in the gender's own colour, so the
-   answer the learner missed is the most legible thing in the row. */
-.miss-word { font-weight: 800; font-size: 15px; }
-.miss-word.der { color: var(--der); }
-.miss-word.die { color: var(--die); }
-.miss-word.das { color: var(--das); }
+/* The headword carries its correct answer in that answer's own colour, so the
+   thing the learner missed is the most legible item in the row. */
+.miss-word { font-weight: 800; font-size: 15px; color: var(--answer, var(--text)); }
 .miss-gloss { color: var(--muted); font-size: 13px; }
 .miss-example { margin: 4px 0 0; font-size: 14px; line-height: 1.45; }
 /* The nominative reference after a declined sentence, e.g. "(der Mann)". */
@@ -304,7 +398,7 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
 #account-nickname:not(:empty) + #rename-btn + #account-email::before { content: "· "; }
 .linkish {
   background: none; border: 0; padding: 0 0 0 8px; cursor: pointer;
-  color: var(--der); font: inherit; text-decoration: underline;
+  color: var(--accent); font: inherit; text-decoration: underline;
 }
 
 /* Sign-in and nickname */
@@ -321,13 +415,13 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
   padding: 12px 14px;
   width: 100%;
 }
-.field:focus { outline: 2px solid var(--der); outline-offset: 1px; }
+.field:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .panel .muted { color: var(--muted); font-size: 13px; margin: 12px 0 0; }
 
 .primary {
   border: none;
   border-radius: 14px;
-  background: var(--der);
+  background: var(--accent);
   color: #0b0e1f;
   font-weight: 800;
   font-size: 16px;
@@ -342,15 +436,29 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
   padding: 4px 16px 16px;
 }
 
-/* The hint wrapper exists so the three drop-zone labels can be hidden as one.
-   It is stretched over the stage's padding box, which is the containing block
-   the hints already resolved against, so wrapping them changed nothing about
-   where they sit. */
+/* The hint frame exists so the drop-zone labels can be hidden as one, and so they
+   have a box to sit outside of. It is laid over the card's own footprint rather
+   than over the whole stage: each label positions against this, so "left of the
+   card" stays left of the card at every viewport width instead of meaning "at the
+   edge of the screen".
+
+   The stage centres the card with flexbox and pads symmetrically, so centring this
+   on the stage's padding box puts the two exactly on top of one another. */
 #hints {
   position: absolute;
-  inset: 0;
+  left: 50%;
+  top: 50%;
+  width: var(--deck-w);
+  height: var(--deck-h);
+  transform: translate(-50%, -50%);
   pointer-events: none;
+  /* Above the stack. The frame is a sibling that comes before .deck in the
+     markup, so without this the card paints over the two cues that sit inside its
+     edges — which is the original bug in a new place. pointer-events: none keeps
+     it out of the way of the drag. */
+  z-index: 2;
 }
+.deck { z-index: 1; }
 
 /* Which deck is open, in the header, with the way back out. */
 .deck-line { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
@@ -416,7 +524,7 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
 .bar-fill {
   height: 100%;
   border-radius: 999px;
-  background: var(--der);
+  background: var(--accent);
   transition: width 220ms ease;
 }
 .deck-card.locked .bar-fill { background: var(--muted); }
@@ -431,19 +539,16 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
   flex-direction: column;
   gap: 12px;
 }
-/* Each block is edged in the colour of the button it leads to, so the
-   explanation and the drill read as one thing. The three answer colours are
-   positional — first, second, third — which is why a case deck can borrow the
-   gender palette without either meaning anything about the other. */
+/* Each block is edged in the colour of the answer it explains, so the
+   explanation and the drill read as one thing. The group already carries a
+   data-answer, so it picks up --answer from the same rule the buttons do and no
+   deck has to be enumerated here. */
 .intro-group {
-  border-left: 3px solid var(--muted);
+  border-left: 3px solid var(--answer, var(--muted));
   border-radius: 0 12px 12px 0;
   background: var(--bg-2);
   padding: 12px 14px;
 }
-.intro-group[data-answer="der"], .intro-group[data-answer="akkusativ"] { border-left-color: var(--der); }
-.intro-group[data-answer="die"], .intro-group[data-answer="dativ"] { border-left-color: var(--die); }
-.intro-group[data-answer="das"], .intro-group[data-answer="genitiv"] { border-left-color: var(--das); }
 .panel .intro-group-label { margin: 0 0 5px; font-size: 14px; font-weight: 700; color: var(--text); }
 .panel .intro-group-members { margin: 0 0 7px; font-size: 15px; font-weight: 600; }
 .panel .intro-group-hook { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
@@ -455,3 +560,29 @@ body[data-drill="case-3way"] .hint { font-size: 12px; letter-spacing: 0; }
 }
 
 .hidden, [hidden] { display: none !important; }
+
+/* Reduced motion.
+ *
+ * The card animations are not decoration — a missed card drifting away in the
+ * direction that would have been right is part of how the miss is taught — but the
+ * slow exit is a 1.6s travel with rotation, and it fires on every mistake. Someone
+ * who gets motion sick cannot avoid it by being careful; they would meet it most
+ * on the deck they find hardest.
+ *
+ * So the transitions go and the positions stay. The card still lands where it
+ * would have landed, the reveal still holds for the same time — the JS timers are
+ * untouched, so nothing about the pacing or the grading changes — it simply cuts
+ * rather than slides. */
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card.slow-exit,
+  .card .feedback,
+  .card .example,
+  .card .example-en,
+  .card .band,
+  .hint,
+  .bar-fill,
+  .choice {
+    transition: none;
+  }
+}

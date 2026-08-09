@@ -235,9 +235,30 @@ A case deck answers the same way with different material. Its cards are
 **triggers** — a preposition or a verb — and the answer worth remembering is not
 the label but the declined phrase, so a miss reads back "durch den Park —
 Akkusativ" rather than the case name alone. The three answers sit in the same
-three directions and wear the same three colours as the articles do, chosen the
-same way: the two horizontal swipes take the commonest answers and the vertical
-flick the rarest, which is *das* for gender and the genitive for case.
+three directions, chosen the same way: the two horizontal swipes take the
+commonest answers and the vertical flick the rarest, which is *das* for gender and
+the genitive for case.
+
+They do **not** wear the same colours, and that is the one thing about the palette
+worth knowing. A colour is bound to a grammatical concept for the life of the app,
+never to the slot an answer happens to sit in. Gender keeps the German classroom
+convention — *der* blue, *die* rose, *das* green — and case has its own family,
+sited in the hue gaps that trio leaves: Akkusativ amber, Dativ cyan, Genitiv
+violet, with Nominativ reserved as an unsaturated steel for the first deck that
+asks for it.
+
+The arrangement this replaced treated the three colours as positional slots, so a
+case deck reused the gender palette on the argument that neither meant anything
+about the other. That holds for a stylesheet and fails for a learner: the noun
+deck spends 213 cards teaching *blue = der*, and colour-coded gender is a
+classroom convention precisely because it sticks. Overwriting it is worse than
+never using colour at all. Keeping the families apart also leaves room for a deck
+that asks for a case *and* a gender on one card — "akkusativ-feminin" — since the
+two are drawn from different palettes rather than competing for the same three.
+
+The mapping lives entirely in `styles.css`, keyed off a `data-answer` attribute.
+Adding a deck is adding a rule there; the client script never learns that the
+dative is cyan.
 
 `/api/batch`, `/api/grade` and `/api/summary` all take a `deck`. Omitting it means
 the noun deck — every request made before the course had a second drill left it
@@ -255,6 +276,7 @@ unlocks the deck after it.
 now, and — when nothing is due — when the next review lands, so a finished deck
 can say "next review in 16 days" instead of "0 due" and a dead *Next batch*
 button.
+
 `GET /healthz` reports whether the app can serve, not whether it is listening. It
 selects the app's real column lists from both study tables, deliberately rather
 than pinging: a ping proves a connection is alive and reads nothing, so it answers

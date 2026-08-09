@@ -39,30 +39,33 @@ const API = {
 // gender that puts das up; for case it puts the genitive up, which is by some
 // distance the least common of the three a trigger can govern.
 //
-// The colour slot each answer borrows is deliberately shared with its direction —
-// left is always the "der" colour, up the "das" colour, right the "die" colour —
-// so the two drills look like one app, and so the introduction's colour-coded
-// groups (see styles.css) line up with the buttons they describe.
+// Nothing here says what an answer looks like. Each one carries its own name into
+// the markup as a data-answer, and the stylesheet maps that name to a colour —
+// "der" is blue because it is the masculine, "akkusativ" is amber because it is
+// the accusative, and neither depends on which button it sits on. That is the
+// change from the arrangement this replaced, where the colours were positional
+// slots and a case deck reused the gender palette: the noun deck teaches blue =
+// der over 213 cards, and the deck after it must not spend that association on
+// something else. It is also what leaves room for a deck that asks for a case and
+// a gender at once, since the two are drawn from different families.
 const DRILLS = {
-  // `short` is what the drop-zone hints say. The left and right hints live in the
-  // narrow gutter beside the card, which fits "der" and not "Akkusativ" — the full
-  // word ends up drawn over by the card. They are peripheral cues read out of the
-  // corner of the eye, so an abbreviation loses nothing, and the buttons below
+  // `short` is what the drop-zone hints say. They are peripheral cues read out of
+  // the corner of the eye, so an abbreviation loses nothing, and the buttons below
   // still carry the full name.
   "article-3way": {
     prompt: "der, die, or das?",
     answers: [
-      { answer: "der", dir: "left",  label: "der", short: "der", slot: "der" },
-      { answer: "das", dir: "up",    label: "das", short: "das", slot: "das" },
-      { answer: "die", dir: "right", label: "die", short: "die", slot: "die" },
+      { answer: "der", dir: "left",  label: "der", short: "der" },
+      { answer: "das", dir: "up",    label: "das", short: "das" },
+      { answer: "die", dir: "right", label: "die", short: "die" },
     ],
   },
   "case-3way": {
     prompt: "which case?",
     answers: [
-      { answer: "akkusativ", dir: "left",  label: "Akkusativ", short: "akk", slot: "der" },
-      { answer: "genitiv",   dir: "up",    label: "Genitiv",   short: "gen", slot: "das" },
-      { answer: "dativ",     dir: "right", label: "Dativ",     short: "dat", slot: "die" },
+      { answer: "akkusativ", dir: "left",  label: "Akkusativ", short: "akk" },
+      { answer: "genitiv",   dir: "up",    label: "Genitiv",   short: "gen" },
+      { answer: "dativ",     dir: "right", label: "Dativ",     short: "dat" },
     ],
   },
 };
@@ -91,10 +94,11 @@ function answerForDir(dir) {
   return spec ? spec.answer : null;
 }
 
-// slotFor is the colour class an answer wears — see DRILLS.
-function slotFor(answer) {
-  const spec = drill().answers.find((a) => a.answer === answer);
-  return spec ? spec.slot : "";
+// tint paints one element in an answer's own colour by naming the answer on it.
+// The stylesheet owns the mapping (see the [data-answer] rules), so this file
+// never has to know that the dative is cyan.
+function tint(node, answer) {
+  if (answer) node.dataset.answer = answer;
 }
 
 // labelFor is how an answer is written on screen: "der" stays lowercase because
@@ -899,8 +903,12 @@ function buildCard(data, behind) {
   const card = document.createElement("div");
   card.className = "card" + (behind ? " behind" : "");
 
+  // Each band names its own answer, which is what gives it its colour, and its own
+  // direction, which is what puts it in a corner. Two attributes rather than one
+  // class because the two facts are independent: an answer keeps its colour if it
+  // is ever moved to a different swipe.
   const bands = drill().answers
-    .map((a) => `<div class="band ${a.slot}">${escapeHtml(a.label)}</div>`)
+    .map((a) => `<div class="band" data-answer="${escapeHtml(a.answer)}" data-dir="${a.dir}">${escapeHtml(a.label)}</div>`)
     .join("");
 
   card.innerHTML = `
@@ -926,7 +934,7 @@ function renderControls() {
   el.controls.replaceChildren();
   for (const a of spec.answers) {
     const btn = document.createElement("button");
-    btn.className = `choice ${a.slot}`;
+    btn.className = "choice";
     btn.type = "button";
     btn.dataset.answer = a.answer;
     btn.textContent = a.label;
@@ -942,7 +950,7 @@ function renderControls() {
     const hint = el.hints[a.dir];
     if (hint) {
       hint.textContent = a.short;
-      hint.dataset.answer = a.answer;
+      tint(hint, a.answer);
     }
   }
 }
@@ -1045,7 +1053,13 @@ function revealFeedback(correct, card) {
   fb.textContent = correct ? `Richtig — ${said}` : said;
   gloss.textContent = card.gloss;
 
-  const band = top.querySelector(`.band.${slotFor(card.answer)}`);
+  // The card takes the correct answer's colour, which is what the feedback line
+  // is drawn in. On a miss that line used to be red — the failure colour, on a
+  // card already outlined in red, contradicting the answer's own colour on the
+  // band beside it. The outline says how it went; the answer says what it is.
+  tint(top, card.answer);
+
+  const band = top.querySelector(`.band[data-answer="${cssEscape(card.answer)}"]`);
   if (band) band.style.opacity = "1";
 }
 
@@ -1206,6 +1220,7 @@ async function finishBatch() {
   el.panelBody.textContent = `${correct}/${state.results.length} correct. ${tail}`.trim();
   renderMisses();
   show(el.panel);
+
 }
 
 // Every card answered wrong this round, in the order it came up. A miss is
@@ -1243,7 +1258,8 @@ function renderMisses() {
 
     const head = document.createElement("div");
     const word = document.createElement("span");
-    word.className = `miss-word ${slotFor(card.answer)}`;
+    word.className = "miss-word";
+    tint(word, card.answer);
     word.textContent = card.phrase ? card.phrase : `${card.answer} ${card.item}`;
     const gloss = document.createElement("span");
     gloss.className = "miss-gloss";
@@ -1366,6 +1382,14 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
   ));
+}
+
+// cssEscape quotes a value for use inside a selector. Answers are authored data
+// rather than anything a learner types, so nothing here is currently exotic — but
+// a selector built from data is worth escaping on principle rather than on
+// inspection of today's decks.
+function cssEscape(s) {
+  return window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s).replace(/["\\]/g, "\\$&");
 }
 
 // wire binds every listener and is the last thing that runs.

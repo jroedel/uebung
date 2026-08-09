@@ -148,13 +148,17 @@
        / dativ in these same three positions — but they are written out here so the
        page is never blank before the first batch arrives. -->
   <nav class="controls" id="controls" hidden aria-label="Answer">
-    <button class="choice der" type="button" data-answer="der">der<small>◀ swipe left</small></button>
-    <button class="choice das" type="button" data-answer="das">das<small>▲ swipe up</small></button>
-    <button class="choice die" type="button" data-answer="die">die<small>swipe right ▶</small></button>
+    <button class="choice" type="button" data-answer="der">der<small>◀ swipe left</small></button>
+    <button class="choice" type="button" data-answer="das">das<small>▲ swipe up</small></button>
+    <button class="choice" type="button" data-answer="die">die<small>swipe right ▶</small></button>
   </nav>
 
   <footer class="footer" id="footer" hidden>
-    <p>Swipe or use ← ↑ → keys. Green = right, red = wrong. Progress saves automatically.</p>
+    <!-- "Green = right, red = wrong" was true of the card's outline and false of
+         everything else on screen, now that each answer carries its own colour and
+         green is also the neuter. Naming the outline says the same thing without
+         claiming the whole palette. -->
+    <p>Swipe or use ← ↑ → keys. The card outlines green when you are right. Progress saves automatically.</p>
   </footer>
 
   <script src="app.js"></script>
