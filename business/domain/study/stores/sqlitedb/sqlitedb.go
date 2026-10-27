@@ -15,6 +15,9 @@
 //     never deleted, so a change to how points are scored can be recomputed from
 //     the history instead of being stranded by it.
 //
+// A third, study_flush, is bookkeeping rather than study data: which batch ids
+// each learner has had applied, so a flush the client resends is recognised.
+//
 // Rows here are the Storage edge: dbProgress and dbReview hold natives and strings
 // only — CardState is stored as its text name, never as an enum int whose meaning
 // depends on iota order — and the toBus*/toDB* pairs are the converters across the
@@ -37,6 +40,7 @@ import (
 	"time"
 
 	"github.com/jroedel/uebung/business/domain/study/studybus"
+	"github.com/jroedel/uebung/business/types/batchid"
 	"github.com/jroedel/uebung/business/types/cardstate"
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
@@ -61,6 +65,14 @@ const timeLayout = time.RFC3339Nano
 // that studybus.Storer is phrased in — there is no synthetic id because a card
 // simply is one user's memory of one item. List filters on (user_id, lang, deck),
 // a prefix of that key, so it is already index-served and needs no second index.
+//
+// study_flush is keyed by (user_id, batch_id) because that pair is the whole
+// question it answers: has this learner's flush already been applied. It is
+// created rather than migrated — a new table — so a binary from before it opens
+// the same file and simply never reads it, and a rollback needs no restore. Rows
+// are never pruned: one is a few dozen bytes per round studied, and a retry may
+// arrive days later from a phone that was offline, so there is no age at which
+// forgetting a batch is safe.
 //
 // study_review has no primary key on purpose. It is a log: two identical answers
 // at two different moments are two facts, and any natural key here would have to
@@ -99,6 +111,13 @@ CREATE TABLE IF NOT EXISTS study_review (
 
 CREATE INDEX IF NOT EXISTS study_review_by_time ON study_review (user_id, reviewed_at);
 CREATE INDEX IF NOT EXISTS study_review_by_deck ON study_review (user_id, lang, deck);
+
+CREATE TABLE IF NOT EXISTS study_flush (
+	user_id     TEXT NOT NULL,
+	batch_id    TEXT NOT NULL,
+	received_at TEXT NOT NULL,
+	PRIMARY KEY (user_id, batch_id)
+) STRICT;
 `
 
 // reviewAnswerColumns are the two columns added after the log was already in
@@ -121,6 +140,9 @@ const progressColumns = `user_id, lang, deck, item, stability, difficulty, state
 
 // reviewColumns is the insert list for the log, in dbReview field order.
 const reviewColumns = `user_id, lang, deck, item, rating, role_answer, given, answer_ms, reviewed_at`
+
+// flushColumns is the insert list for the applied-flush record, in dbFlush order.
+const flushColumns = `user_id, batch_id, received_at`
 
 // dbProgress is one card as persisted: natives and strings only, no strong types.
 // This is what SQLite sees.
@@ -156,6 +178,14 @@ type dbReview struct {
 	Given      string
 	AnswerMS   int64
 	ReviewedAt string
+}
+
+// dbFlush is one applied flush as persisted. It is only ever written: the one
+// question asked of it is answered by the insert itself.
+type dbFlush struct {
+	User       string
+	Batch      string
+	ReceivedAt string
 }
 
 // dbConfusion is one grouped tally as the database returns it: a card, an answer
@@ -221,6 +251,7 @@ func (s *Store) Check(ctx context.Context) error {
 	for _, q := range []string{
 		`SELECT ` + progressColumns + ` FROM study_progress LIMIT 1`,
 		`SELECT ` + reviewColumns + ` FROM study_review LIMIT 1`,
+		`SELECT ` + flushColumns + ` FROM study_flush LIMIT 1`,
 	} {
 		rows, err := s.db.QueryContext(ctx, q)
 		if err != nil {
@@ -479,10 +510,86 @@ func (s *Store) Get(ctx context.Context, user userid.UserID, lang langcode.LangC
 // Save writes a card by its (user, lang, deck, item) key and appends the review
 // that produced it, in one transaction. Either both land or neither does, which is
 // what lets the log be read as a true history of the deck.
-//
-// The card itself is written with a single upsert, so it is never briefly absent
-// the way a delete-then-insert would leave it.
 func (s *Store) Save(ctx context.Context, p studybus.Progress, rev studybus.Review) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlitedb: saving card %q: %w", p.Item, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := writeCard(ctx, tx, p); err != nil {
+		return err
+	}
+
+	if err := writeReview(ctx, tx, rev); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlitedb: saving card %q: %w", p.Item, err)
+	}
+
+	return nil
+}
+
+// SaveFlush writes a whole flush in one transaction: the batch record first, then
+// every card and its review in order. If the learner already has the batch the
+// insert of its record changes nothing, the transaction is rolled back untouched,
+// and studybus.ErrDuplicateFlush is returned.
+//
+// The record goes first so a duplicate costs one statement, and it is detected by
+// ON CONFLICT DO NOTHING and the affected-row count rather than by matching the
+// driver's constraint error, which is neither portable nor stable.
+func (s *Store) SaveFlush(ctx context.Context, user userid.UserID, batch batchid.BatchID, progress []studybus.Progress, reviews []studybus.Review) error {
+	const recordFlush = `INSERT INTO study_flush (` + flushColumns + `) VALUES (?, ?, ?)
+ON CONFLICT (user_id, batch_id) DO NOTHING`
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlitedb: saving flush: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if !batch.IsZero() {
+		f := toDBFlush(user, batch, time.Now())
+
+		res, err := tx.ExecContext(ctx, recordFlush, f.User, f.Batch, f.ReceivedAt)
+		if err != nil {
+			return fmt.Errorf("sqlitedb: recording flush %q: %w", f.Batch, err)
+		}
+
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("sqlitedb: recording flush %q: %w", f.Batch, err)
+		}
+
+		if n == 0 {
+			return studybus.ErrDuplicateFlush
+		}
+	}
+
+	for _, p := range progress {
+		if err := writeCard(ctx, tx, p); err != nil {
+			return err
+		}
+	}
+
+	for _, rev := range reviews {
+		if err := writeReview(ctx, tx, rev); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlitedb: saving flush: %w", err)
+	}
+
+	return nil
+}
+
+// writeCard upserts one card inside tx. The card is written with a single upsert,
+// so it is never briefly absent the way a delete-then-insert would leave it.
+func writeCard(ctx context.Context, tx *sql.Tx, p studybus.Progress) error {
 	const upsert = `
 INSERT INTO study_progress (` + progressColumns + `)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -495,18 +602,9 @@ ON CONFLICT (user_id, lang, deck, item) DO UPDATE SET
 	last_review = excluded.last_review,
 	due         = excluded.due`
 
-	const appendReview = `INSERT INTO study_review (` + reviewColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-
 	r := toDBProgress(p)
-	v := toDBReview(rev)
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlitedb: saving card %q: %w", p.Item, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	_, err = tx.ExecContext(ctx, upsert,
+	_, err := tx.ExecContext(ctx, upsert,
 		r.User, r.Lang, r.Deck, r.Item,
 		r.Stability, r.Difficulty, r.State,
 		r.Reps, r.Lapses, r.LastReview, r.Due,
@@ -515,7 +613,16 @@ ON CONFLICT (user_id, lang, deck, item) DO UPDATE SET
 		return fmt.Errorf("sqlitedb: saving card %q: %w", p.Item, err)
 	}
 
-	_, err = tx.ExecContext(ctx, appendReview,
+	return nil
+}
+
+// writeReview appends one answer to the log inside tx.
+func writeReview(ctx context.Context, tx *sql.Tx, rev studybus.Review) error {
+	const appendReview = `INSERT INTO study_review (` + reviewColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	v := toDBReview(rev)
+
+	_, err := tx.ExecContext(ctx, appendReview,
 		v.User, v.Lang, v.Deck, v.Item,
 		v.Rating, v.RoleAnswer, v.Given, v.AnswerMS, v.ReviewedAt,
 	)
@@ -523,11 +630,16 @@ ON CONFLICT (user_id, lang, deck, item) DO UPDATE SET
 		return fmt.Errorf("sqlitedb: logging the review of %q: %w", rev.Item, err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlitedb: saving card %q: %w", p.Item, err)
-	}
-
 	return nil
+}
+
+// toDBFlush flattens an applied-flush record for storage.
+func toDBFlush(user userid.UserID, batch batchid.BatchID, at time.Time) dbFlush {
+	return dbFlush{
+		User:       user.String(),
+		Batch:      batch.String(),
+		ReceivedAt: formatTime(at),
+	}
 }
 
 // rowScanner is what *sql.Row and *sql.Rows have in common, so the single-row and

@@ -1415,6 +1415,52 @@ func TestGradeRejectsAnItemTheDeckDoesNotHold(t *testing.T) {
 	}
 }
 
+// A phone that lost signal after sending cannot know whether its flush landed,
+// and resends it. The second arrival must be a success that changes nothing: the
+// learner's answers are stored once, and the client can stop retrying.
+func TestGradeResendOfAnAppliedBatchIsADuplicate(t *testing.T) {
+	h := newServer(t)
+	body := `{"lang":"de","deck":"der-die-das","batch_id":"3b241101-e2bb-4255-8caf-4136c566a962","results":[
+		{"item":"Mann","rating":"good","given":"der"}
+	]}`
+
+	var responses [2]struct {
+		Applied   int  `json:"applied"`
+		Duplicate bool `json:"duplicate"`
+		Learned   int  `json:"learned"`
+	}
+	for i := range responses {
+		rec := gradeRaw(t, h, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("flush %d status = %d, want 200; body=%s", i, rec.Code, rec.Body)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &responses[i]); err != nil {
+			t.Fatalf("decoding flush %d: %v", i, err)
+		}
+	}
+
+	if first := responses[0]; first.Applied != 1 || first.Duplicate {
+		t.Errorf("first flush = %+v, want applied 1 and not a duplicate", first)
+	}
+	if again := responses[1]; again.Applied != 0 || !again.Duplicate || again.Learned != 1 {
+		t.Errorf("resend = %+v, want applied 0, duplicate, learned still 1", again)
+	}
+
+	if got := getConfusion(t, h, "der-die-das"); got.Recorded != 1 {
+		t.Errorf("recorded = %d answers, want 1 -- the resend was logged again", got.Recorded)
+	}
+}
+
+// A batch id is a storage key; one that is not a plain token is refused.
+func TestGradeRejectsAMalformedBatchID(t *testing.T) {
+	h := newServer(t)
+
+	rec := gradeRaw(t, h, `{"lang":"de","batch_id":"not a token;","results":[{"item":"Mann","rating":"good"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("grade status = %d, want 400; body=%s", rec.Code, rec.Body)
+	}
+}
+
 // A flush is one batch, and no batch is longer than the batch limit (5 here).
 func TestGradeRejectsAFlushLongerThanABatch(t *testing.T) {
 	h := newServer(t)

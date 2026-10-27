@@ -81,6 +81,12 @@ type gradeRequest struct {
 	// instead of failing the strict decode.
 	Deck string `json:"deck"`
 
+	// BatchID names this flush, so a resend of it is recognised and not applied
+	// twice. The client mints it when the batch starts and keeps it with the
+	// results until the server has answered. Empty is a client from before the
+	// field existed; its flush is applied but cannot be recognised if repeated.
+	BatchID string `json:"batch_id"`
+
 	Results []gradeOutcome `json:"results"`
 }
 
@@ -155,12 +161,18 @@ type confusionResponse struct {
 
 // gradeResponse reports the state of the deck after a flush was applied, so the
 // client can show progress and decide whether to request another batch.
+//
+// Duplicate is true when the flush's batch had already been applied: nothing was
+// written this time, Applied is 0, and the counts are the deck as the first
+// arrival left it. For the client it is a success — its answers are stored — and
+// it stops resending.
 type gradeResponse struct {
-	Applied  int    `json:"applied"`            // cards successfully graded.
-	DueNow   int    `json:"due_now"`            // reviews already due again.
-	Learned  int    `json:"learned"`            // cards ever reviewed at least once.
-	DeckSize int    `json:"deck_size"`          // total cards in the deck.
-	NextDue  string `json:"next_due,omitempty"` // RFC3339; see summaryResponse.
+	Applied   int    `json:"applied"`            // cards graded by this request.
+	Duplicate bool   `json:"duplicate"`          // the batch was already applied.
+	DueNow    int    `json:"due_now"`            // reviews already due again.
+	Learned   int    `json:"learned"`            // cards ever reviewed at least once.
+	DeckSize  int    `json:"deck_size"`          // total cards in the deck.
+	NextDue   string `json:"next_due,omitempty"` // RFC3339; see summaryResponse.
 }
 
 // summaryResponse is a lightweight progress snapshot for the language.

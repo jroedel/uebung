@@ -596,8 +596,10 @@ func writeLocked(w http.ResponseWriter, g curriculumbus.Gate) {
 }
 
 // handleGrade applies a batched flush of graded cards and returns the deck's
-// state afterward. Grading is applied card by card; the first storage failure
-// stops the flush and reports how many were applied before it.
+// state afterward. The flush is applied as one unit — every card or none — so a
+// client whose flush failed can send it again without anything being graded
+// twice; and a flush whose batch was already applied is answered as a success
+// with Duplicate set, which covers a response lost on its way back.
 func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 	var req gradeRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -616,7 +618,7 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lang, deckID, results, err := toBusGradeRequest(req)
+	lang, deckID, batch, results, err := toBusGradeRequest(req)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -680,13 +682,11 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 
 	now := a.now()
 
-	applied := 0
-	for _, in := range results {
-		if _, err := a.study.Grade(ctx, user, lang, d.ID, in, now); err != nil {
-			writeServerError(w, err)
-			return
-		}
-		applied++
+	applied, err := a.study.GradeFlush(ctx, user, lang, d.ID, batch, results, now)
+	duplicate := errors.Is(err, studybus.ErrDuplicateFlush)
+	if err != nil && !duplicate {
+		writeServerError(w, err)
+		return
 	}
 
 	sum, err := a.computeSummary(ctx, user, lang, d)
@@ -696,11 +696,12 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, gradeResponse{
-		Applied:  applied,
-		DueNow:   sum.DueNow,
-		Learned:  sum.Learned,
-		DeckSize: sum.DeckSize,
-		NextDue:  sum.NextDue,
+		Applied:   applied,
+		Duplicate: duplicate,
+		DueNow:    sum.DueNow,
+		Learned:   sum.Learned,
+		DeckSize:  sum.DeckSize,
+		NextDue:   sum.NextDue,
 	})
 }
 

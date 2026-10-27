@@ -2,12 +2,14 @@ package sqlitedb_test
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/jroedel/uebung/business/domain/study/stores/sqlitedb"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
+	"github.com/jroedel/uebung/business/types/batchid"
 	"github.com/jroedel/uebung/business/types/cardstate"
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
@@ -697,5 +699,97 @@ func TestOpenIsIdempotentAfterAddingTheAnswerColumns(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Given != "das" {
 		t.Fatalf("reopening disturbed the log: %+v", got)
+	}
+}
+
+// flushOf builds a flush of two cards, Haus and Mann, with their reviews.
+func flushOf() ([]studybus.Progress, []studybus.Review) {
+	haus := sampleCard()
+	mann := sampleCard()
+	mann.Item = "Mann"
+
+	return []studybus.Progress{haus, mann}, []studybus.Review{reviewFor(haus), reviewFor(mann)}
+}
+
+// A flush lands whole: every card and every review it carries.
+func TestSaveFlushWritesEveryCardAndReview(t *testing.T) {
+	s, db := openWithDB(t, filepath.Join(t.TempDir(), "flush.db"))
+	progress, reviews := flushOf()
+
+	if err := s.SaveFlush(t.Context(), userid.Local(), batchid.MustParse("b-1"), progress, reviews); err != nil {
+		t.Fatalf("SaveFlush: %v", err)
+	}
+
+	for _, item := range []string{"Haus", "Mann"} {
+		if _, ok, err := s.Get(t.Context(), userid.Local(), langcode.German, nouns, item); err != nil || !ok {
+			t.Errorf("Get(%s) = found %v, err %v; want the saved card", item, ok, err)
+		}
+		if n := countReviews(t, db, item); n != 1 {
+			t.Errorf("%s logged rows: got %d, want 1", item, n)
+		}
+	}
+}
+
+// The second arrival of a batch is a retry of one already applied. It must write
+// nothing — not a card, not a review — and say so.
+func TestSaveFlushRefusesABatchAlreadyApplied(t *testing.T) {
+	s, db := openWithDB(t, filepath.Join(t.TempDir(), "dup.db"))
+	progress, reviews := flushOf()
+	batch := batchid.MustParse("3b241101-e2bb-4255-8caf-4136c566a962")
+
+	if err := s.SaveFlush(t.Context(), userid.Local(), batch, progress, reviews); err != nil {
+		t.Fatalf("first SaveFlush: %v", err)
+	}
+
+	err := s.SaveFlush(t.Context(), userid.Local(), batch, progress, reviews)
+	if !errors.Is(err, studybus.ErrDuplicateFlush) {
+		t.Fatalf("second SaveFlush err = %v, want ErrDuplicateFlush", err)
+	}
+
+	if n := countReviews(t, db, "Haus"); n != 1 {
+		t.Errorf("logged rows after a duplicate: got %d, want 1", n)
+	}
+}
+
+// A batch id is one learner's. Another learner's flush that happens to carry the
+// same id is a different flush and applies.
+func TestSaveFlushBatchesAreScopedToTheirLearner(t *testing.T) {
+	s := open(t)
+	batch := batchid.MustParse("same-id")
+
+	for _, user := range []userid.UserID{userid.Local(), userid.MustParse("other-learner")} {
+		progress, reviews := flushOf()
+		for i := range progress {
+			progress[i].User = user
+			reviews[i].User = user
+		}
+
+		if err := s.SaveFlush(t.Context(), user, batch, progress, reviews); err != nil {
+			t.Fatalf("SaveFlush for %s: %v", user, err)
+		}
+	}
+}
+
+// A client from before batch ids sends none. Its flush is applied, and because
+// there is nothing to remember it by, applying it again applies it again.
+func TestSaveFlushWithoutABatchIsNotRemembered(t *testing.T) {
+	s, db := openWithDB(t, filepath.Join(t.TempDir(), "legacy.db"))
+	progress, reviews := flushOf()
+
+	for range 2 {
+		if err := s.SaveFlush(t.Context(), userid.Local(), batchid.BatchID{}, progress, reviews); err != nil {
+			t.Fatalf("SaveFlush: %v", err)
+		}
+	}
+
+	if n := countReviews(t, db, "Haus"); n != 2 {
+		t.Errorf("logged rows: got %d, want 2", n)
+	}
+}
+
+// The health check reads every table this binary uses, study_flush included.
+func TestCheckPassesOnAFreshDatabase(t *testing.T) {
+	if err := open(t).Check(t.Context()); err != nil {
+		t.Fatalf("Check: %v", err)
 	}
 }

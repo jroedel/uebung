@@ -2,11 +2,13 @@ package studybus_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/jroedel/uebung/business/domain/study/stores/memdb"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
+	"github.com/jroedel/uebung/business/types/batchid"
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/rating"
@@ -394,5 +396,85 @@ func TestConfusionsRequiresAScope(t *testing.T) {
 
 	if _, err := b.Confusions(t.Context(), user, de, deckid.DeckID{}); err == nil {
 		t.Fatal("Confusions accepted a zero deck")
+	}
+}
+
+// A flush applies every answer it carries and says how many.
+func TestGradeFlushAppliesEveryAnswer(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+
+	n, err := b.GradeFlush(t.Context(), user, de, nouns, batchid.MustParse("b-1"), []studybus.GradeInput{
+		{Item: "Haus", Rating: rating.Good, Role: roleanswer.None},
+		{Item: "Mann", Rating: rating.Again, Role: roleanswer.None},
+	}, anchor)
+	if err != nil {
+		t.Fatalf("GradeFlush: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("applied = %d, want 2", n)
+	}
+	if got := len(store.Reviews()); got != 2 {
+		t.Fatalf("logged %d reviews, want 2", got)
+	}
+}
+
+// Resending a flush that already landed — the client could not tell, because the
+// answer was lost on the way back — must not review the cards a second time.
+func TestGradeFlushRecognisesARetry(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+	batch := batchid.MustParse("3b241101-e2bb-4255-8caf-4136c566a962")
+	ins := []studybus.GradeInput{{Item: "Haus", Rating: rating.Good, Role: roleanswer.None}}
+
+	if _, err := b.GradeFlush(t.Context(), user, de, nouns, batch, ins, anchor); err != nil {
+		t.Fatalf("first GradeFlush: %v", err)
+	}
+
+	n, err := b.GradeFlush(t.Context(), user, de, nouns, batch, ins, anchor.Add(time.Minute))
+	if !errors.Is(err, studybus.ErrDuplicateFlush) {
+		t.Fatalf("retry err = %v, want ErrDuplicateFlush", err)
+	}
+	if n != 0 {
+		t.Fatalf("retry applied = %d, want 0", n)
+	}
+
+	card, _, _ := store.Get(t.Context(), user, de, nouns, "Haus")
+	if card.Reps != 1 {
+		t.Fatalf("Reps = %d after a retry, want 1", card.Reps)
+	}
+}
+
+// One bad answer refuses the whole flush. Applying the good ones would leave the
+// client unable to resend the rest without re-grading what had landed.
+func TestGradeFlushIsAllOrNothing(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+
+	_, err := b.GradeFlush(t.Context(), user, de, nouns, batchid.MustParse("b-1"), []studybus.GradeInput{
+		{Item: "Haus", Rating: rating.Good, Role: roleanswer.None},
+		{Item: "Mann", Role: roleanswer.None}, // no rating
+	}, anchor)
+	if err == nil {
+		t.Fatal("expected an error for a flush with an invalid answer")
+	}
+	if got := len(store.Reviews()); got != 0 {
+		t.Fatalf("a refused flush logged %d reviews, want 0", got)
+	}
+}
+
+// A card answered twice in one flush is reviewed twice, the second time from the
+// state the first left it in — not twice from the stored state.
+func TestGradeFlushAppliesRepeatsInOrder(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+
+	_, err := b.GradeFlush(t.Context(), user, de, nouns, batchid.MustParse("b-1"), []studybus.GradeInput{
+		{Item: "Haus", Rating: rating.Again, Role: roleanswer.None},
+		{Item: "Haus", Rating: rating.Good, Role: roleanswer.None},
+	}, anchor)
+	if err != nil {
+		t.Fatalf("GradeFlush: %v", err)
+	}
+
+	card, _, _ := store.Get(t.Context(), user, de, nouns, "Haus")
+	if card.Reps != 2 {
+		t.Fatalf("Reps = %d, want 2", card.Reps)
 	}
 }

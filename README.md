@@ -221,7 +221,11 @@ ship its introduction ahead of its drill.
    Any key or tap skips the rest of a reveal, so knowing the answer still lets
    you move at speed.
 3. When the batch is done the client flushes every grade in one
-   `POST /api/grade`. The server runs each through FSRS and persists the result.
+   `POST /api/grade`. The server runs each through FSRS and persists the whole
+   flush in one transaction. The flush is kept on the device until the server
+   confirms it, so a round finished without signal — or with a session that
+   expired mid-round — is sent when the connection is back, and the round's
+   panel says it is not saved yet rather than looking like success.
 4. The round ends on the cards you got wrong, each shown in a sentence with its
    translation, so a miss is corrected in context rather than just counted.
 
@@ -266,6 +270,13 @@ out, and every one of them meant that deck, so defaulting is what keeps a cached
 client working. `/api/grade` accepts a card's key as either `item` or, for the
 same reason, the older `lemma`; sending both is an error rather than a silent
 preference.
+
+A flush carries a `batch_id` the client mints when the batch starts. Resending a
+flush whose batch was already applied — the phone could not tell, because the
+answer was lost on the way back — returns 200 with `"duplicate": true` and writes
+nothing. A flush with no `batch_id` (a cached client) is still applied, just not
+recognised if repeated. A flush is refused before anything is written if it is
+longer than one batch, over 64 KiB, or names a card the deck does not hold.
 
 A locked deck is refused with 403 by `/api/batch` and `/api/grade`, not merely
 greyed out on the shelf. A gate enforced only in the browser is a suggestion, and
@@ -408,7 +419,11 @@ There are two tables, and the difference between them is the point:
 
 A grade writes to both in one transaction, which is why `Storer.Save` takes the
 card and its review together: a crash must not be able to leave a card advanced
-with no record of the answer that advanced it.
+with no record of the answer that advanced it. A whole flush goes the same way
+through `Storer.SaveFlush`, together with a row in a third table, `study_flush`,
+recording that the learner's batch was applied — which is how a resend is
+recognised. That table is additive: a binary from before it opens the same
+database and never reads it, so a rollback needs no restore.
 
 A database written before decks existed is migrated on `Open`. SQLite cannot add a
 column to a primary key in place, so this is the documented rebuild — create,
