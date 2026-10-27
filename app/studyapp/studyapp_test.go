@@ -644,30 +644,34 @@ func TestExhaustedDeckReportsWhenTheNextCardIsDue(t *testing.T) {
 		t.Fatalf("loading the deck: %v", err)
 	}
 
-	// Answer the whole deck, so nothing is unseen and nothing is due back yet.
+	// Answer the whole deck, so nothing is unseen and nothing is due back yet. It
+	// goes in flushes of one batch each (5 here), because that is the most a flush
+	// may carry.
 	type outcome struct {
 		Lemma  string `json:"lemma"`
 		Rating string `json:"rating"`
 	}
-	payload := struct {
-		Lang    string    `json:"lang"`
-		Results []outcome `json:"results"`
-	}{Lang: "de"}
-	for _, n := range nouns {
-		payload.Results = append(payload.Results, outcome{Lemma: n.Lemma, Rating: "easy"})
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("encoding flush: %v", err)
-	}
+	for chunk := range slices.Chunk(nouns, 5) {
+		payload := struct {
+			Lang    string    `json:"lang"`
+			Results []outcome `json:"results"`
+		}{Lang: "de"}
+		for _, n := range chunk {
+			payload.Results = append(payload.Results, outcome{Lemma: n.Lemma, Rating: "easy"})
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("encoding flush: %v", err)
+		}
 
-	gradeReq := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/grade", bytes.NewReader(raw))
-	gradeReq.Header.Set("Content-Type", "application/json")
-	gradeRec := httptest.NewRecorder()
-	h.ServeHTTP(gradeRec, gradeReq)
+		gradeReq := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/grade", bytes.NewReader(raw))
+		gradeReq.Header.Set("Content-Type", "application/json")
+		gradeRec := httptest.NewRecorder()
+		h.ServeHTTP(gradeRec, gradeReq)
 
-	if gradeRec.Code != http.StatusOK {
-		t.Fatalf("grade status = %d, want 200; body=%s", gradeRec.Code, gradeRec.Body)
+		if gradeRec.Code != http.StatusOK {
+			t.Fatalf("grade status = %d, want 200; body=%s", gradeRec.Code, gradeRec.Body)
+		}
 	}
 
 	batchReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/batch?lang=de", nil)
@@ -1389,6 +1393,55 @@ func TestGradeWithoutAnAnswerStillApplies(t *testing.T) {
 	got := getConfusion(t, h, "der-die-das")
 	if got.Recorded != 0 {
 		t.Errorf("recorded = %d, want 0 -- an unreported answer was invented", got.Recorded)
+	}
+}
+
+// A card the deck does not hold is not a card anyone was served. Storing it would
+// count it as seen — in this deck and in the gate of the deck after it — so the
+// whole flush is refused before anything is written.
+func TestGradeRejectsAnItemTheDeckDoesNotHold(t *testing.T) {
+	h := newServer(t)
+
+	rec := gradeRaw(t, h, `{"lang":"de","deck":"der-die-das","results":[
+		{"item":"Mann","rating":"good"},
+		{"item":"Quatschwort","rating":"good"}
+	]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("grade status = %d, want 400; body=%s", rec.Code, rec.Body)
+	}
+
+	if learned := getDecks(t, h)[0].Learned; learned != 0 {
+		t.Errorf("a refused flush still wrote %d cards", learned)
+	}
+}
+
+// A flush is one batch, and no batch is longer than the batch limit (5 here).
+func TestGradeRejectsAFlushLongerThanABatch(t *testing.T) {
+	h := newServer(t)
+
+	rows := make([]string, 0, 6)
+	for _, item := range []string{"Mann", "Frau", "Kind", "Haus", "Zeit", "Tag"} {
+		rows = append(rows, `{"item":"`+item+`","rating":"good"}`)
+	}
+
+	rec := gradeRaw(t, h, `{"lang":"de","results":[`+strings.Join(rows, ",")+`]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("grade status = %d, want 400; body=%s", rec.Code, rec.Body)
+	}
+
+	if learned := getDecks(t, h)[0].Learned; learned != 0 {
+		t.Errorf("a refused flush still wrote %d cards", learned)
+	}
+}
+
+// The body is bounded before it is decoded, so an oversized one costs a 413 and
+// nothing else.
+func TestGradeRejectsAnOversizedBody(t *testing.T) {
+	h := newServer(t)
+
+	rec := gradeRaw(t, h, `{"lang":"de","results":[{"item":"`+strings.Repeat("x", 70<<10)+`","rating":"good"}]}`)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("grade status = %d, want 413; body=%s", rec.Code, rec.Body)
 	}
 }
 

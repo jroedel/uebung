@@ -126,6 +126,27 @@ func toBusGradeAnswers(results []studybus.GradeInput, answers []string) error {
 	return fes.ErrorOrNil()
 }
 
+// toBusGradeItems checks that every graded card is one the deck holds.
+//
+// toBusGradeRequest can only see that a key is present; whether "Haus" is a card
+// in this deck is, like the answer check above, a question about the deck. A key
+// that is not would still be stored — the scheduler takes items as opaque strings
+// — and would then count as a card seen: in this deck's tally, and in the coverage
+// the next deck's gate is opened on.
+func toBusGradeItems(results []studybus.GradeInput, items []string) error {
+	var fes errs.FieldErrors
+
+	for i, res := range results {
+		if slices.Contains(items, res.Item) {
+			continue
+		}
+
+		fes.Addf("results", "row %d: %q is not a card in this deck", i, res.Item)
+	}
+
+	return fes.ErrorOrNil()
+}
+
 // fromBusConfusionResponse builds a learner's error profile for one deck.
 //
 // It is where the two halves meet. The study domain counted how often each item

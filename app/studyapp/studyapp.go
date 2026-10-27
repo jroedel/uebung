@@ -600,8 +600,19 @@ func writeLocked(w http.ResponseWriter, g curriculumbus.Gate) {
 // stops the flush and reports how many were applied before it.
 func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 	var req gradeRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, err)
+		return
+	}
+
+	// A flush is one batch's worth of answers, and a batch never holds more than
+	// batchLimit cards. Anything longer did not come from the client, and every row
+	// is a write that holds the store's only writer, so it is refused before a
+	// single one is parsed.
+	if len(req.Results) > a.batchLimit {
+		var fes errs.FieldErrors
+		fes.Addf("results", "a flush carries at most %d cards, got %d", a.batchLimit, len(req.Results))
+		writeError(w, fes)
 		return
 	}
 
@@ -649,6 +660,20 @@ func (a *App) handleGrade(w http.ResponseWriter, r *http.Request) {
 	// ever grows, so an answer the deck does not accept would sit in this
 	// learner's error profile for good.
 	if err := toBusGradeAnswers(results, d.Answers); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	// The same holds for the cards themselves. An item the deck does not hold would
+	// become a progress row that counts as "seen" — towards this deck's tally and
+	// towards the gate its successor opens on — for a card no batch ever served.
+	items, _, err := a.deckCards(ctx, d)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+
+	if err := toBusGradeItems(results, items); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -882,10 +907,16 @@ func formatDue(t time.Time) string {
 
 // --- HTTP plumbing ---------------------------------------------------------
 
+// maxRequestBody bounds a JSON request body. The largest legitimate one is a
+// flush of batchLimit graded cards, a few hundred bytes each; 64 KiB leaves a wide
+// margin above that while keeping an unbounded body from being read at all.
+const maxRequestBody = 64 << 10
+
 // decodeJSON reads a JSON request body into v, rejecting unknown fields so a
-// typo'd client key is an error rather than a silently ignored no-op.
-func decodeJSON(r *http.Request, v any) error {
-	dec := json.NewDecoder(r.Body)
+// typo'd client key is an error rather than a silently ignored no-op, and refusing
+// a body longer than maxRequestBody.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	dec.DisallowUnknownFields()
 
 	return dec.Decode(v)
@@ -899,9 +930,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // writeError maps a caller-input failure to 400. A FieldErrors becomes a
-// per-field map so the client can point at what it sent wrong; any other error
-// here is treated as a bad request with its message.
+// per-field map so the client can point at what it sent wrong; a body over
+// maxRequestBody is a 413; any other error here is treated as a bad request with
+// its message.
 func writeError(w http.ResponseWriter, err error) {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "request body too large"})
+		return
+	}
+
 	if fes, ok := errs.IsFieldErrors(err); ok {
 		fields := make(map[string]string, len(fes))
 		for _, fe := range fes {
