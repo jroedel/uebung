@@ -227,7 +227,7 @@
     {
       "id": "de-verben-kasus",
       "title": "Which case does this verb take?",
-      "subtitle": "The dative verbs, and the accusative ones they get confused with",
+      "subtitle": "The dative verbs, the accusative ones they get confused with, and the few that take the genitive",
       "drill": "case-3way",
       "prerequisite": "de-praepositionen",
       "answers": ["akkusativ", "dativ", "genitiv"],
@@ -256,6 +256,12 @@
             "label": "Accusative -- the traps",
             "members": "anrufen, fragen, treffen, unterstützen, stören, mögen, bitten, verstehen",
             "hook": "Most of these have a near-twin in the dative lists, and the twin takes the other case: unterstützen against helfen, fragen against antworten, treffen against begegnen, mögen against gefallen. Where the meanings are closest the cases diverge, which is exactly why they are worth drilling together. \"anrufen\" is here for a different reason -- it is simply the single most mis-cased verb learners produce."
+          },
+          {
+            "answer": "genitiv",
+            "label": "Genitive -- a handful, all formal",
+            "members": "gedenken, bedürfen, entbehren, sich annehmen, sich enthalten",
+            "hook": "You will read these in the news, in speeches and in official letters far more often than you hear them, and speech swaps most of them for a plainer twin -- which takes the accusative: \"an die Opfer denken\" for \"der Opfer gedenken\", \"brauchen\" for \"bedürfen\". Learn to recognise them; they are the reason the genitive is an answer here at all."
           }
         ],
         "closing": "A useful habit: learn a new verb together with the case it takes, the way you learn a noun together with its article."
@@ -518,6 +524,51 @@
           "phrase": "deinen Vater verstehen",
           "example": "Ich verstehe deinen Vater nicht.",
           "example_en": "I don't understand your father."
+        },
+        {
+          "trigger": "gedenken",
+          "case": "genitiv",
+          "gloss": "to commemorate, to remember (formally)",
+          "phrase": "der Opfer gedenken",
+          "example": "Heute gedenken wir der Opfer des Krieges.",
+          "example_en": "Today we remember the victims of the war.",
+          "note": "Formal: speeches, memorials, the news. In speech the same thought is \"an die Opfer denken\" -- an with the accusative."
+        },
+        {
+          "trigger": "bedürfen",
+          "case": "genitiv",
+          "gloss": "to require, to need (formal)",
+          "phrase": "keiner Erklärung bedürfen",
+          "example": "Das bedarf keiner weiteren Erklärung.",
+          "example_en": "That needs no further explanation.",
+          "note": "Its everyday twin \"brauchen\" takes the accusative: \"Das braucht keine Erklärung.\""
+        },
+        {
+          "trigger": "entbehren",
+          "case": "genitiv",
+          "gloss": "to lack (formal)",
+          "phrase": "jeder Grundlage entbehren",
+          "example": "Die Vorwürfe entbehren jeder Grundlage.",
+          "example_en": "The accusations are completely unfounded.",
+          "note": "Met almost only in this one phrase, \"jeder Grundlage entbehren\" -- to be without any basis -- which is a staple of denials and press statements."
+        },
+        {
+          "trigger": "sich (einer Sache) annehmen",
+          "case": "genitiv",
+          "gloss": "to take care of, to take on",
+          "phrase": "sich des Problems annehmen",
+          "example": "Die Lehrerin nimmt sich des neuen Schülers an.",
+          "example_en": "The teacher is taking the new pupil under her wing.",
+          "note": "Reflexive and separable: \"sich\" plus the genitive object, with \"an\" at the end."
+        },
+        {
+          "trigger": "sich (einer Sache) enthalten",
+          "case": "genitiv",
+          "gloss": "to abstain from",
+          "phrase": "sich der Stimme enthalten",
+          "example": "Drei Abgeordnete enthielten sich der Stimme.",
+          "example_en": "Three members abstained from the vote.",
+          "note": "\"sich der Stimme enthalten\" -- to abstain in a vote -- is the form you will meet, every election night."
         }
       ]
     }
