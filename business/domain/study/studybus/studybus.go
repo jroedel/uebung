@@ -17,6 +17,7 @@ import (
 
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
+	"github.com/jroedel/uebung/business/types/rating"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/fsrs"
 )
@@ -193,14 +194,16 @@ func (b *Business) Grade(ctx context.Context, user userid.UserID, lang langcode.
 		}
 	}
 
-	reviewed := fromFSRSCard(current, b.sched.Review(toFSRSCard(current), now, toFSRSRating(in.Rating)))
+	applied := ratingFor(current, in.Rating)
+
+	reviewed := fromFSRSCard(current, b.sched.Review(toFSRSCard(current), now, toFSRSRating(applied)))
 
 	rev := Review{
 		User:     user,
 		Lang:     lang,
 		Deck:     deck,
 		Item:     in.Item,
-		Rating:   in.Rating,
+		Rating:   applied,
 		Role:     in.Role,
 		Given:    in.Given,
 		Answered: in.Answered,
@@ -212,6 +215,26 @@ func (b *Business) Grade(ctx context.Context, user userid.UserID, lang langcode.
 	}
 
 	return reviewed, nil
+}
+
+// ratingFor is the rating a review is scheduled and logged with, which on a card's
+// first review is at most Good.
+//
+// Every drill is a three-way forced choice, so a learner who has never seen a card
+// still answers it correctly one time in three, and a guess can be fast. Easy on a
+// first review starts the card at FSRS's Easy stability (w3, about 16 days at 0.9
+// retention), so a lucky swipe would send a card nobody has learned away for two
+// weeks. Speed is a fair signal of confidence on a card the learner has met before;
+// on first sight it says nothing about memory, so Good (3 days) is the ceiling.
+//
+// The log records the capped rating because it is the one the card's state was
+// computed from; how fast the answer came is kept in Answered regardless.
+func ratingFor(current Progress, r rating.Rating) rating.Rating {
+	if current.IsNew() {
+		return min(r, rating.Good)
+	}
+
+	return r
 }
 
 // Confusions reports how often each of a learner's cards in one deck drew each

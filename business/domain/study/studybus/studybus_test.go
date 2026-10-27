@@ -244,6 +244,59 @@ func TestGradeAgainSchedulesSoonerThanGood(t *testing.T) {
 	}
 }
 
+// A three-way drill is guessed right one time in three, so a fast correct answer
+// on a card never seen before is not evidence of memory. It is scheduled as Good,
+// not Easy — and logged as Good, since that is what the card was computed from.
+func TestFirstReviewIsRatedAtMostGood(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+	ctx := t.Context()
+
+	easy, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Haus", Rating: rating.Easy, Role: roleanswer.None}, anchor)
+	if err != nil {
+		t.Fatalf("Grade easy: %v", err)
+	}
+	good, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Mann", Rating: rating.Good, Role: roleanswer.None}, anchor)
+	if err != nil {
+		t.Fatalf("Grade good: %v", err)
+	}
+
+	if !easy.Due.Equal(good.Due) || easy.Stability != good.Stability {
+		t.Fatalf("first-review Easy scheduled to %v (S=%.2f), want the same as Good: %v (S=%.2f)",
+			easy.Due, easy.Stability, good.Due, good.Stability)
+	}
+
+	if logged := store.Reviews()[0].Rating; logged != rating.Good {
+		t.Fatalf("logged rating = %v, want good", logged)
+	}
+}
+
+// The cap is for first sight only. On a card the learner has met, a fast answer is
+// a real signal and Easy has to schedule further out than Good.
+func TestLaterReviewsKeepEasy(t *testing.T) {
+	b, _, user := newBusiness(t, 20)
+	ctx := t.Context()
+
+	for _, item := range []string{"Haus", "Mann"} {
+		if _, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: item, Rating: rating.Good, Role: roleanswer.None}, anchor); err != nil {
+			t.Fatalf("first review of %s: %v", item, err)
+		}
+	}
+
+	later := anchor.Add(4 * 24 * time.Hour)
+	easy, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Haus", Rating: rating.Easy, Role: roleanswer.None}, later)
+	if err != nil {
+		t.Fatalf("Grade easy: %v", err)
+	}
+	good, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Mann", Rating: rating.Good, Role: roleanswer.None}, later)
+	if err != nil {
+		t.Fatalf("Grade good: %v", err)
+	}
+
+	if !easy.Due.After(good.Due) {
+		t.Fatalf("second-review Easy due %v, want later than Good %v", easy.Due, good.Due)
+	}
+}
+
 func TestBatchRequiresUserLanguageAndDeck(t *testing.T) {
 	b, _, _ := newBusiness(t, 20)
 	ctx := context.Background()
