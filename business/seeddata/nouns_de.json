@@ -1,7 +1,7 @@
 {
   "language": "de",
   "module": "der-die-das",
-  "description": "The ~200 most frequently occurring German nouns in film and television subtitles, each with its nominative-singular definite article (gender), a short English gloss, and an example sentence with its translation. The example uses the noun in a natural case, so the article in the sentence may be declined; the client shows the nominative form alongside it for reference. Ordered roughly by descending subtitle frequency. Genders hand-verified; a native review is always welcome.",
+  "description": "The ~200 most frequently occurring German nouns in film and television subtitles, each with its nominative-singular definite article (gender), a short English gloss, and an example sentence with its translation. The example uses the noun in a natural case, so the article in the sentence may be declined; the client shows the nominative form alongside it for reference. Ordered roughly by descending subtitle frequency, from FrequencyWords by Hermit Dave (github.com/hermitdave/FrequencyWords, 2018 German list from OpenSubtitles2018), CC BY-SA 4.0. Genders hand-verified; a native review is always welcome. This file is CC BY-SA 4.0; see LICENSE in this directory.",
   "nouns": [
     {"noun": "Mann", "article": "der", "gloss": "man", "example": "Ich kenne den Mann nicht.", "example_en": "I don't know the man."},
     {"noun": "Zeit", "article": "die", "gloss": "time", "example": "Wir haben keine Zeit mehr.", "example_en": "We're out of time."},
