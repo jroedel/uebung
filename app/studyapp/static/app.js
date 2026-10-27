@@ -1625,7 +1625,7 @@ async function finishBatch() {
   if (exhausted) hide(el.againBtn);
   else show(el.againBtn);
 
-  let tail = sum ? `${sum.due_now} due now · ${sum.learned}/${sum.deck_size} nouns seen.` : "";
+  let tail = sum ? `${sum.due_now} due now · ${sum.learned}/${sum.deck_size} cards seen.` : "";
   if (reopens) tail += ` Your next review is ${reopens}.`;
 
   // A round that did not reach the server must not read as saved. Kept means it
