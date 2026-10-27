@@ -23,8 +23,8 @@ RewriteEngine On
 # konsoleH can validate certificates two ways: DNSAuth (now that Hetzner holds
 # the zone) and FileAuth, which writes a challenge file into THIS docroot. A
 # catch-all [P] below would hand that path to the Go app, which knows nothing
-# about it, and FileAuth would fail. tmpcontrol.online is in exactly that state:
-# its /.well-known/acme-challenge/ returns 503 because the proxy swallows it.
+# about it, and FileAuth would fail: /.well-known/acme-challenge/ would answer
+# 503 whenever the app was down, and renewal would break silently months later.
 #
 # So: serve /.well-known/ from disk and stop.
 RewriteCond %{REQUEST_URI} ^/\.well-known/ [NC]

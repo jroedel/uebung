@@ -9,10 +9,12 @@ Agents must not SSH to this host.** This file exists so you do not need to.
 For *doing* a deployment rather than knowing about the machine, see
 [DEPLOYING.md](DEPLOYING.md).
 
-**Deliberately omitted:** the SSH account name, the SSH port, and the connection
-string. Those live in `deploy/deploy.env`, which is gitignored, because *this
-repository is public*. Everything below is either already publicly discoverable
-(DNS, PTR, TLS, mail topology) or harmless on its own.
+**Deliberately omitted:** the SSH account name, the SSH port, the connection
+string, the server's addresses and host name, and which other sites share the
+hosting account. The first three live in `deploy/deploy.env`, which is gitignored,
+because *this repository is public*; the rest are left out because, collected in
+one public place, they map more of the operator's infrastructure than anyone
+working on this app needs. Everything below is about how the platform behaves.
 
 Last verified 2026-08-07.
 
@@ -24,13 +26,9 @@ Last verified 2026-08-07.
 |---|---|
 | Provider | Hetzner, managed via the **konsoleH** panel |
 | Kind | Dedicated/managed server, **not** shared webhosting |
-| Public IPv4 | `78.47.5.22` |
-| Public IPv6 | `2a01:4f8:d0a:4267::2` |
-| Reverse DNS | `dedi2934.your-server.de`, forward-confirmed, matches the SMTP HELO |
+| Reverse DNS | `<server>.your-server.de`, forward-confirmed, matches the SMTP HELO |
 | OS | Linux 6.1 (Debian 12) |
-| Account layout | `uebung.club` is an **Addon Domain** under the `schoenstatt.link` konsoleH account |
-
-`tmpcontrol.online` and `patres` live on the same account.
+| Account layout | `uebung.club` is an **Addon Domain** under another domain's konsoleH account, shared with other sites |
 
 ## What the shell can and cannot do
 
@@ -107,8 +105,8 @@ This distinction cost real time to work out and is worth keeping:
     Apache. It needs mode 644. `mktemp` produces 600 and `scp` carries the source
     mode, which is how this happened here.
 
-`tmpcontrol.online` returns a blanket 503; `uebung.club` returned 403 before
-deployment, and 403 again afterwards when the app directory was mode 700.
+`uebung.club` returned 403 before deployment, and 403 again afterwards when the app
+directory was mode 700.
 
 ## TLS
 
@@ -133,8 +131,8 @@ konsoleH's FileAuth writes challenges into the document root. A catch-all
 `RewriteRule … [P]` hands `/.well-known/acme-challenge/` to the application,
 which knows nothing about it, and **renewal breaks silently months later**.
 
-`deploy/uebung.htaccess` excludes `/.well-known/` for exactly this reason.
-`tmpcontrol.online` is in the broken state right now.
+`deploy/uebung.htaccess` excludes `/.well-known/` for exactly this reason. Any
+other app proxied the same way on this account needs the same exclusion.
 
 ## DNS
 
@@ -152,19 +150,19 @@ The app sends sign-in links, so this is load-bearing: no mail means no logins.
 
 | | |
 |---|---|
-| MX | `dedi2934.your-server.de` (the server itself) |
+| MX | `<server>.your-server.de` (the server itself) |
 | Submission | `587` and `465`, both open |
-| MTA | Exim 4.96 |
+| MTA | Exim |
 | Extras | ClamAV scanning, Horde webmail |
 | Mailboxes | `hi@uebung.club` (app `From:`), `dmarc@uebung.club` (DMARC reports) |
 
-**Outbound mail leaves from `78.47.5.22`** — verified in a recipient's headers,
-not assumed. The internal path is
-`webmail → sslproxy05.your-server.de (78.46.172.2) → dedi2934 → recipient`, and
-the final hop is what SPF evaluates.
+**Outbound mail leaves from the server's own address** — verified in a recipient's
+headers, not assumed. The internal path is
+`webmail → sslproxy05.your-server.de → <server> → recipient`, and the final hop is
+what SPF evaluates.
 
-⚠️ **`mail.your-server.de` is a different host (`78.46.5.205`)** and is **not**
-covered by `a`/`mx`. If submission is ever pointed there, SPF fails on every
+⚠️ **`mail.your-server.de` is a different host** and is **not** covered by
+`a`/`mx`. If submission is ever pointed there, SPF fails on every
 sign-in email. Keep `-smtp-host` on the account's own server.
 
 ### Authentication, all verified passing at Gmail
@@ -251,15 +249,3 @@ Each of these was a real bug or a real wasted hour:
   during this work. Break the pattern (`"sl""eep 400"`) or use a PID.
 - **Spamhaus returns `127.255.255.254` from public resolvers** — that is *query
   refused*, not a listing. Their listing codes are `127.0.0.2`–`127.0.0.11`.
-
-## Known problems on neighbouring domains
-
-Not ours to fix, but they will bite someone:
-
-- **`tmpcontrol.online`** — certificate expires **2026-09-26**, its DNS is still at
-  Namecheap, and `/.well-known/acme-challenge/` returns 503 because its proxy
-  swallows it. FileAuth renewal cannot succeed in that state. Its Go app is down
-  and port `33429` is open but refusing connections.
-- **`schoenstatt.link`** — publishes **two** DMARC records, so receivers ignore its
-  policy entirely (RFC 7489). Also `?all` in its SPF and no DKIM on any common
-  selector.

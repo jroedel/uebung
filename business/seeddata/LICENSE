@@ -1,0 +1,23 @@
+Copyright 2026 the Übung Club maintainer
+
+The authored course content in this directory — the noun deck, the preposition
+and verb case decks, their introductions, glosses and example sentences, and
+anything else under `business/seeddata/` — is licensed under the
+
+    Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+
+Full text: https://creativecommons.org/licenses/by-sa/4.0/legalcode
+Summary:   https://creativecommons.org/licenses/by-sa/4.0/
+
+You may share and adapt it, including commercially, provided you give
+appropriate credit and license your adaptations under the same terms.
+
+Attribution for material this content is derived from:
+
+    The choice and order of the nouns in nouns_de.json are derived from
+    FrequencyWords by Hermit Dave (https://github.com/hermitdave/FrequencyWords),
+    content/2018/de/de_50k.txt, licensed CC BY-SA 4.0, which was built from the
+    OpenSubtitles2018 corpus (http://opus.nlpl.eu/OpenSubtitles2018.php).
+
+The code in this repository is licensed separately, under Apache-2.0; see the
+LICENSE file at the repository root.

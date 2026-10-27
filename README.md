@@ -2,10 +2,14 @@
 
 A spaced-repetition trainer for German grammatical gender — **der / die / das** —
 drilled on the nouns that turn up most often in film and television subtitles.
-Runs at [uebung.club](https://uebung.club).
 
-The first deck is German gender: the ~200 highest-frequency subtitle nouns, each
-scheduled with **FSRS** (the Free Spaced Repetition Scheduler) so you review each
+**Try it at [uebung.club](https://uebung.club).**
+
+<p align="center"><img src="docs/screenshot.png" alt="A card reading “Platz” with the question “der, die, or das?” and three buttons below: der (swipe left), das (swipe up), die (swipe right)" width="300"></p>
+
+The first deck is German gender: the ~200 highest-frequency subtitle nouns — chosen
+and ordered from the [FrequencyWords](https://github.com/hermitdave/FrequencyWords)
+list built from OpenSubtitles — each scheduled with **FSRS** (the Free Spaced Repetition Scheduler) so you review each
 noun exactly as often as your memory of it needs. The browser client is a swipe
 game — flick a card left for *der*, up for *das*, right for *die* — and because a
 whole batch is preloaded with its answers, every swipe is graded instantly with no
@@ -378,14 +382,14 @@ Three deliberate boundaries make future modules cheap:
   App assembles from the study domain. That is what makes the rule testable
   without a database and changeable without a migration.
 
-### Multi-user readiness
+### Identity
 
-The app runs single-user today. Every study record is nonetheless keyed by a
-`userid.UserID`, and the one place identity is resolved
-(`studyapp.App.currentUser`) returns the built-in `Local()` user. When accounts
-arrive, that method starts returning a session-derived id and nothing downstream
-changes — the storage schema and every business signature already speak in user
-identity.
+Every study record is keyed by a `userid.UserID`, and there is one place it is
+resolved: `studyapp.App.currentUser`, through the `Authenticator` the app is built
+with. In production that is the session cookie a magic-link sign-in issues (see
+*Accounts*); under `-single-user`, for development, it is the built-in `Local()`
+learner. Nothing below the App layer knows which — the storage schema and every
+business signature speak in user identity.
 
 ### Storage
 
@@ -520,8 +524,19 @@ needs no separate install — but it does query the vulnerability database over
 the network. Offline, run `make test-unit lint`.
 
 The deck genders and example sentences are hand-written; corrections to
-`business/domain/vocab/stores/seeddb/nouns_de.json` are welcome, and a native
+`business/seeddata/nouns_de.json` are welcome, and a native
 review of the German is genuinely wanted. The seed test guards against a
 malformed edit shipping: every noun must carry a gender, a gloss, a sentence and
 a translation, and the sentence must actually contain its own noun — which is
 the way a hand-edit most easily goes wrong.
+
+## License
+
+The code is licensed under [Apache-2.0](LICENSE).
+
+The course content under `business/seeddata/` — the decks, their introductions,
+glosses and example sentences — is licensed under
+[CC BY-SA 4.0](business/seeddata/LICENSE). The choice and order of the noun deck
+are derived from [FrequencyWords](https://github.com/hermitdave/FrequencyWords) by
+Hermit Dave (CC BY-SA 4.0), built from the
+[OpenSubtitles2018](http://opus.nlpl.eu/OpenSubtitles2018.php) corpus.
