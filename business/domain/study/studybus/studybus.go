@@ -11,12 +11,15 @@ package studybus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
 
+	"github.com/jroedel/uebung/business/types/batchid"
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
+	"github.com/jroedel/uebung/business/types/rating"
 	"github.com/jroedel/uebung/business/types/userid"
 	"github.com/jroedel/uebung/foundation/fsrs"
 )
@@ -44,6 +47,16 @@ type Storer interface {
 	// or a scored review of a card that never advanced. An implementation must
 	// apply both or neither.
 	Save(ctx context.Context, p Progress, rev Review) error
+
+	// SaveFlush writes a whole flush — each card's new state and the review that
+	// produced it, in order — and records batch as applied for user, as one atomic
+	// unit. If user already has batch recorded it writes nothing and returns
+	// ErrDuplicateFlush. A zero batch is applied but not recorded.
+	//
+	// The same reasoning as Save, one level up: a flush the client may resend is
+	// only safe to resend if it landed entirely or not at all, and if its record of
+	// having landed cannot be separated from the cards it moved.
+	SaveFlush(ctx context.Context, user userid.UserID, batch batchid.BatchID, progress []Progress, reviews []Review) error
 
 	// Confusions counts, for one learner's deck, how often each item drew each
 	// answer, over every review that recorded one. Rows whose answer was never
@@ -150,6 +163,11 @@ func (b *Business) Batch(ctx context.Context, user userid.UserID, lang langcode.
 	return out, nil
 }
 
+// ErrDuplicateFlush reports that a flush carried a batch id this learner has
+// already had applied. Nothing was written: the answers it holds are already in
+// the store, from the first time the flush arrived.
+var ErrDuplicateFlush = errors.New("studybus: flush already applied")
+
 // Grade applies a self-graded answer to one card at time now, advances its memory
 // model through the scheduler, persists the result together with a record of the
 // answer, and returns the updated Progress. An item the user has never seen starts
@@ -159,28 +177,117 @@ func (b *Business) Batch(ctx context.Context, user userid.UserID, lang langcode.
 // log untouched; neither takes part in scheduling, which is FSRS's business and
 // depends on the rating alone.
 func (b *Business) Grade(ctx context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID, in GradeInput, now time.Time) (Progress, error) {
-	if user.IsZero() || lang.IsZero() || deck.IsZero() || in.Item == "" {
-		return Progress{}, fmt.Errorf("studybus: grade requires a user, language, deck, and item")
+	if err := checkScope(user, lang, deck); err != nil {
+		return Progress{}, err
 	}
 
-	if !in.Rating.Valid() {
-		return Progress{}, fmt.Errorf("studybus: invalid rating")
+	if err := checkGrade(in); err != nil {
+		return Progress{}, err
 	}
 
-	if !in.Role.Valid() {
-		return Progress{}, fmt.Errorf("studybus: invalid role answer")
+	current, err := b.load(ctx, user, lang, deck, in.Item, now)
+	if err != nil {
+		return Progress{}, err
 	}
+
+	reviewed, rev := b.review(current, in, now)
+
+	if err := b.store.Save(ctx, reviewed, rev); err != nil {
+		return Progress{}, fmt.Errorf("studybus: saving card %q: %w", in.Item, err)
+	}
+
+	return reviewed, nil
+}
+
+// GradeFlush applies one batch's worth of answers as a single unit and returns how
+// many it applied.
+//
+// Either every answer lands or none does. That is what makes a failed flush safe
+// to send again: the client cannot see how far a half-applied flush got, so a
+// retry would re-grade whatever had landed. And a flush that did land is
+// recognised by its batch id — the second arrival of the same id is refused with
+// ErrDuplicateFlush and writes nothing — which covers the case the client cannot
+// tell apart from a failure, a response lost on the way back.
+//
+// A zero batch is a client from before batch ids. Its flush is still applied
+// atomically, but is not remembered, so it cannot be recognised if repeated.
+//
+// Every answer is checked before any is applied, and answers are applied in
+// order: a card answered twice in one flush is reviewed twice, the second time
+// from the state the first left it in.
+func (b *Business) GradeFlush(ctx context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID, batch batchid.BatchID, ins []GradeInput, now time.Time) (int, error) {
+	if err := checkScope(user, lang, deck); err != nil {
+		return 0, err
+	}
+
+	for _, in := range ins {
+		if err := checkGrade(in); err != nil {
+			return 0, err
+		}
+	}
+
+	cards := make(map[string]Progress, len(ins))
+	progress := make([]Progress, 0, len(ins))
+	reviews := make([]Review, 0, len(ins))
+
+	for _, in := range ins {
+		current, seen := cards[in.Item]
+		if !seen {
+			var err error
+			if current, err = b.load(ctx, user, lang, deck, in.Item, now); err != nil {
+				return 0, err
+			}
+		}
+
+		reviewed, rev := b.review(current, in, now)
+		cards[in.Item] = reviewed
+		progress = append(progress, reviewed)
+		reviews = append(reviews, rev)
+	}
+
+	if err := b.store.SaveFlush(ctx, user, batch, progress, reviews); err != nil {
+		return 0, fmt.Errorf("studybus: saving flush %q: %w", batch, err)
+	}
+
+	return len(ins), nil
+}
+
+// checkScope refuses a grade that does not say whose card, in which language and
+// which deck, it is.
+func checkScope(user userid.UserID, lang langcode.LangCode, deck deckid.DeckID) error {
+	if user.IsZero() || lang.IsZero() || deck.IsZero() {
+		return fmt.Errorf("studybus: grade requires a user, language and deck")
+	}
+
+	return nil
+}
+
+// checkGrade refuses an answer the scheduler or the log could not use.
+func checkGrade(in GradeInput) error {
+	switch {
+	case in.Item == "":
+		return fmt.Errorf("studybus: grade requires an item")
+	case !in.Rating.Valid():
+		return fmt.Errorf("studybus: invalid rating")
+	case !in.Role.Valid():
+		return fmt.Errorf("studybus: invalid role answer")
 
 	// A negative duration is a broken clock or a client subtracting the wrong way
 	// round, and either way it is not an answer time. Refusing it here keeps the
 	// log arithmetic-safe for everything that will later average it.
-	if in.Answered < 0 {
-		return Progress{}, fmt.Errorf("studybus: answer time cannot be negative")
+	case in.Answered < 0:
+		return fmt.Errorf("studybus: answer time cannot be negative")
 	}
 
-	current, found, err := b.store.Get(ctx, user, lang, deck, in.Item)
+	return nil
+}
+
+// load returns the stored card for item, or a fresh one due now if the learner
+// has never reviewed it.
+func (b *Business) load(ctx context.Context, user userid.UserID, lang langcode.LangCode, deck deckid.DeckID, item string, now time.Time) (Progress, error) {
+	current, found, err := b.store.Get(ctx, user, lang, deck, item)
 	if err != nil {
-		return Progress{}, fmt.Errorf("studybus: loading card %q: %w", in.Item, err)
+		return Progress{}, fmt.Errorf("studybus: loading card %q: %w", item, err)
 	}
 
 	if !found {
@@ -188,30 +295,54 @@ func (b *Business) Grade(ctx context.Context, user userid.UserID, lang langcode.
 			User: user,
 			Lang: lang,
 			Deck: deck,
-			Item: in.Item,
+			Item: item,
 			Due:  now,
 		}
 	}
 
-	reviewed := fromFSRSCard(current, b.sched.Review(toFSRSCard(current), now, toFSRSRating(in.Rating)))
+	return current, nil
+}
+
+// review advances one card through the scheduler for one answer, and builds the
+// log entry that records it. It writes nothing.
+func (b *Business) review(current Progress, in GradeInput, now time.Time) (Progress, Review) {
+	applied := ratingFor(current, in.Rating)
+
+	reviewed := fromFSRSCard(current, b.sched.Review(toFSRSCard(current), now, toFSRSRating(applied)))
 
 	rev := Review{
-		User:     user,
-		Lang:     lang,
-		Deck:     deck,
+		User:     current.User,
+		Lang:     current.Lang,
+		Deck:     current.Deck,
 		Item:     in.Item,
-		Rating:   in.Rating,
+		Rating:   applied,
 		Role:     in.Role,
 		Given:    in.Given,
 		Answered: in.Answered,
 		At:       now,
 	}
 
-	if err := b.store.Save(ctx, reviewed, rev); err != nil {
-		return Progress{}, fmt.Errorf("studybus: saving card %q: %w", in.Item, err)
+	return reviewed, rev
+}
+
+// ratingFor is the rating a review is scheduled and logged with, which on a card's
+// first review is at most Good.
+//
+// Every drill is a three-way forced choice, so a learner who has never seen a card
+// still answers it correctly one time in three, and a guess can be fast. Easy on a
+// first review starts the card at FSRS's Easy stability (w3, about 16 days at 0.9
+// retention), so a lucky swipe would send a card nobody has learned away for two
+// weeks. Speed is a fair signal of confidence on a card the learner has met before;
+// on first sight it says nothing about memory, so Good (3 days) is the ceiling.
+//
+// The log records the capped rating because it is the one the card's state was
+// computed from; how fast the answer came is kept in Answered regardless.
+func ratingFor(current Progress, r rating.Rating) rating.Rating {
+	if current.IsNew() {
+		return min(r, rating.Good)
 	}
 
-	return reviewed, nil
+	return r
 }
 
 // Confusions reports how often each of a learner's cards in one deck drew each

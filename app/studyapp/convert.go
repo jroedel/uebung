@@ -9,6 +9,7 @@ import (
 	"github.com/jroedel/uebung/business/domain/study/studybus"
 	"github.com/jroedel/uebung/business/domain/trigger/triggerbus"
 	"github.com/jroedel/uebung/business/domain/vocab/vocabbus"
+	"github.com/jroedel/uebung/business/types/batchid"
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/rating"
@@ -54,7 +55,7 @@ func toBusDeck(raw string) (deckid.DeckID, error) {
 // the catalog as an argument would be doing the handler's composing for it — so
 // this parses the shape and toBusGradeAnswers, which the handler calls once it has
 // the deck in hand, checks the meaning.
-func toBusGradeRequest(req gradeRequest) (langcode.LangCode, deckid.DeckID, []studybus.GradeInput, error) {
+func toBusGradeRequest(req gradeRequest) (langcode.LangCode, deckid.DeckID, batchid.BatchID, []studybus.GradeInput, error) {
 	var fes errs.FieldErrors
 
 	lang, err := langcode.Parse(req.Lang)
@@ -62,6 +63,9 @@ func toBusGradeRequest(req gradeRequest) (langcode.LangCode, deckid.DeckID, []st
 
 	deck, err := toBusDeck(req.Deck)
 	fes.Add("deck", err)
+
+	batch, err := toBusBatch(req.BatchID)
+	fes.Add("batch_id", err)
 
 	results := make([]studybus.GradeInput, 0, len(req.Results))
 	for i, r := range req.Results {
@@ -98,7 +102,18 @@ func toBusGradeRequest(req gradeRequest) (langcode.LangCode, deckid.DeckID, []st
 		})
 	}
 
-	return lang, deck, results, fes.ErrorOrNil()
+	return lang, deck, batch, results, fes.ErrorOrNil()
+}
+
+// toBusBatch parses a flush's batch id, treating the empty string as "none
+// supplied" — the zero BatchID — for the same reason toBusDeck defaults: a cached
+// client from before the field existed sends no id, and its round still counts.
+func toBusBatch(raw string) (batchid.BatchID, error) {
+	if raw == "" {
+		return batchid.BatchID{}, nil
+	}
+
+	return batchid.Parse(raw)
 }
 
 // toBusGradeAnswers checks each row's reported answer against the ones the deck
@@ -121,6 +136,27 @@ func toBusGradeAnswers(results []studybus.GradeInput, answers []string) error {
 		}
 
 		fes.Addf("results", "row %d (%s): %q is not one of this deck's answers", i, res.Item, res.Given)
+	}
+
+	return fes.ErrorOrNil()
+}
+
+// toBusGradeItems checks that every graded card is one the deck holds.
+//
+// toBusGradeRequest can only see that a key is present; whether "Haus" is a card
+// in this deck is, like the answer check above, a question about the deck. A key
+// that is not would still be stored — the scheduler takes items as opaque strings
+// — and would then count as a card seen: in this deck's tally, and in the coverage
+// the next deck's gate is opened on.
+func toBusGradeItems(results []studybus.GradeInput, items []string) error {
+	var fes errs.FieldErrors
+
+	for i, res := range results {
+		if slices.Contains(items, res.Item) {
+			continue
+		}
+
+		fes.Addf("results", "row %d: %q is not a card in this deck", i, res.Item)
 	}
 
 	return fes.ErrorOrNil()

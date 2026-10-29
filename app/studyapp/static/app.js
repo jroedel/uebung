@@ -209,7 +209,9 @@ const state = {
   deck: null,    // the deck being studied, or null on the shelf
   cards: [],     // {item, answer, gloss, example, example_en, phrase?, note?}
   index: 0,      // current card
-  results: [],   // {item, rating}
+  results: [],   // {item, rating, given, answer_ms}
+  batchID: "",   // names this round's flush, so a resend is recognised
+  account: "",   // the signed-in address; unsent answers are kept per account
   shownAt: 0,    // when the current card was first shown
   locked: false, // true while an answer animates, to swallow double input
   advance: null, // while a reveal is on screen: run it early to skip the rest
@@ -293,6 +295,11 @@ async function start() {
   // Show the address. A session can be started by following a link someone else
   // sent, so "which account am I in" has to be answerable at a glance.
   el.accountEmail.textContent = me.email;
+  state.account = me.email;
+
+  // Anything an earlier visit could not send goes now. Not awaited: the shelf
+  // does not depend on it, and a slow network must not hold up the first screen.
+  drainPending();
   showAccount(me);
   show(el.account);
 
@@ -1080,6 +1087,7 @@ async function loadBatch() {
     state.cards = data.cards || [];
     state.index = 0;
     state.results = [];
+    state.batchID = newBatchID();
     if (state.cards.length === 0) {
       finishEmpty(data.next_due);
       return;
@@ -1114,21 +1122,146 @@ async function loadSummary() {
   }
 }
 
+// flush sends this round's answers and returns the deck summary the server
+// answers with, or null if they could not be stored just now.
+//
+// A round used to be one POST that either landed or was gone: a phone dropping
+// signal on the last card, or a session that had expired mid-round, cost every
+// answer in it, behind a "Batch complete" panel that looked like success. Now the
+// flush is written to this device first and only removed once the server has
+// confirmed it, so a failure leaves it queued for drainPending to send again. The
+// batch id travels with it, which is what makes resending safe: a flush that did
+// land, whose answer was lost on the way back, is recognised by the server and
+// not applied twice.
 async function flush() {
-  // Send the whole batch's grades in one request, naming the deck they belong to
-  // — without it the server would file every answer against the noun deck.
+  const entry = {
+    account: state.account,
+    // The deck is named, or the server would file every answer against the noun
+    // deck.
+    body: { lang: API.lang, deck: deckID(), batch_id: state.batchID, results: state.results },
+  };
+  queuePending(entry);
+
+  return sendPending(entry);
+}
+
+// --- unsent answers ----------------------------------------------------------
+
+// The queue lives in localStorage, keyed by version so a later change of shape can
+// ignore entries it does not understand rather than misread them. Each entry is
+// one flush, tagged with the account that earned it: a session can expire and a
+// different person sign in on the same device, and their study must not absorb
+// someone else's answers.
+const PENDING_KEY = "uebung.pending.v1";
+
+// A device offline for a long time keeps its rounds, but not without bound. Past
+// this many the oldest are dropped — a week of daily study is far below it.
+const PENDING_MAX = 50;
+
+// Flushes being sent right now, by batch id, so the online event firing during a
+// flush does not send the same one twice at once.
+const inFlight = new Set();
+
+function readPending() {
+  try {
+    const list = JSON.parse(localStorage.getItem(PENDING_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch (err) {
+    // Private browsing can throw, and a corrupt value parses to nothing useful.
+    // Either way there is no queue to read; the flush is still sent once.
+    console.error(err);
+    return [];
+  }
+}
+
+function writePending(list) {
+  try {
+    if (list.length) localStorage.setItem(PENDING_KEY, JSON.stringify(list));
+    else localStorage.removeItem(PENDING_KEY);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function queuePending(entry) {
+  const list = readPending().filter((e) => e.body.batch_id !== entry.body.batch_id);
+  list.push(entry);
+  writePending(list.slice(-PENDING_MAX));
+}
+
+function dropPending(batchID) {
+  writePending(readPending().filter((e) => e.body.batch_id !== batchID));
+}
+
+function isPending(batchID) {
+  return readPending().some((e) => e.body.batch_id === batchID);
+}
+
+// sendPending posts one queued flush and settles it. It returns the server's
+// summary when the answers are stored — whether by this request or, for a
+// duplicate, an earlier one — and null otherwise.
+//
+// What stays queued is decided by whether sending again could ever work:
+//   - stored, or a duplicate of a flush already stored: done, dropped;
+//   - 401: the session expired; signing back in will let it through, so kept;
+//   - 5xx, or no response at all: the server or the network, so kept;
+//   - any other 4xx: the server has refused these answers — a deck locked since,
+//     a card no longer in it — and will refuse them every time, so dropped.
+async function sendPending(entry) {
+  const id = entry.body.batch_id;
+  if (inFlight.has(id)) return null;
+  inFlight.add(id);
+
   try {
     const res = await fetch(API.grade, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lang: API.lang, deck: deckID(), results: state.results }),
+      body: JSON.stringify(entry.body),
     });
-    if (!res.ok) throw new Error(`grade failed: ${res.status}`);
-    return await res.json();
+
+    if (res.ok) {
+      dropPending(id);
+      return await res.json();
+    }
+
+    if (res.status !== 401 && res.status < 500) {
+      dropPending(id);
+      console.error(`grade refused: ${res.status}`, await res.text().catch(() => ""));
+    }
+
+    return null;
   } catch (err) {
     console.error(err);
     return null;
+  } finally {
+    inFlight.delete(id);
   }
+}
+
+// drainPending sends every queued flush that belongs to the signed-in account,
+// oldest first, stopping at the first that does not go through — if one cannot
+// reach the server just now, the rest will not either.
+async function drainPending() {
+  for (const entry of readPending()) {
+    if (entry.account !== state.account) continue;
+    if (!(await sendPending(entry))) return;
+  }
+}
+
+// forgetPending removes the signed-in account's queue, for signing out: a shared
+// device should not keep one person's unsent answers for whoever signs in next.
+function forgetPending() {
+  writePending(readPending().filter((e) => e.account !== state.account));
+}
+
+// newBatchID names a round. randomUUID needs a secure context, which the site
+// always is; the fallback covers a development server reached over plain http by
+// a LAN address.
+function newBatchID() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // deckID is the deck currently being studied. Empty when none is open, which the
@@ -1492,8 +1625,17 @@ async function finishBatch() {
   if (exhausted) hide(el.againBtn);
   else show(el.againBtn);
 
-  let tail = sum ? `${sum.due_now} due now · ${sum.learned}/${sum.deck_size} nouns seen.` : "";
+  let tail = sum ? `${sum.due_now} due now · ${sum.learned}/${sum.deck_size} cards seen.` : "";
   if (reopens) tail += ` Your next review is ${reopens}.`;
+
+  // A round that did not reach the server must not read as saved. Kept means it
+  // is on this device and goes when the connection or the session is back; not
+  // kept means the server refused it, which retrying cannot change.
+  if (!sum) {
+    tail = isPending(state.batchID)
+      ? "Couldn\u2019t save this round yet \u2014 it\u2019s kept on this device and will be sent when you\u2019re back online."
+      : "These answers couldn\u2019t be saved.";
+  }
 
   el.panelBody.textContent = `${correct}/${state.results.length} correct. ${tail}`.trim();
   renderMisses();
@@ -1747,6 +1889,11 @@ function wire() {
 
   el.signinForm.addEventListener("submit", requestLink);
 
+  // A phone coming back into signal is the moment a queued round can go.
+  window.addEventListener("online", () => {
+    if (state.account) drainPending();
+  });
+
   el.nicknameForm.addEventListener("submit", submitNickname);
   el.nicknameSkipBtn.addEventListener("click", skipNickname);
   el.renameBtn.addEventListener("click", openRename);
@@ -1758,6 +1905,11 @@ function wire() {
   });
 
   el.signoutBtn.addEventListener("click", async () => {
+    // Send anything still queued while the session can, then forget the rest:
+    // after this, the device may be someone else's.
+    await drainPending();
+    forgetPending();
+
     try {
       await fetch(API.logout, { method: "POST" });
     } catch (err) {

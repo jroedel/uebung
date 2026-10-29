@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/jroedel/uebung/business/domain/study/studybus"
+	"github.com/jroedel/uebung/business/types/batchid"
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/userid"
@@ -25,11 +26,17 @@ type Store struct {
 	mu      sync.RWMutex
 	cards   map[string]studybus.Progress
 	reviews []studybus.Review
+
+	// flushes is the set of (user, batch) pairs already applied, keyed like cards.
+	flushes map[string]struct{}
 }
 
 // New constructs an empty in-memory store.
 func New() *Store {
-	return &Store{cards: make(map[string]studybus.Progress)}
+	return &Store{
+		cards:   make(map[string]studybus.Progress),
+		flushes: make(map[string]struct{}),
+	}
 }
 
 // key builds the composite storage key. Newlines cannot appear in a UserID,
@@ -73,6 +80,29 @@ func (s *Store) Save(_ context.Context, p studybus.Progress, rev studybus.Review
 
 	s.cards[key(p.User, p.Lang, p.Deck, p.Item)] = p
 	s.reviews = append(s.reviews, rev)
+
+	return nil
+}
+
+// SaveFlush writes a flush's cards and reviews and records its batch, all under
+// one lock, or writes nothing and returns studybus.ErrDuplicateFlush if this user
+// already has the batch recorded.
+func (s *Store) SaveFlush(_ context.Context, user userid.UserID, batch batchid.BatchID, progress []studybus.Progress, reviews []studybus.Review) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !batch.IsZero() {
+		k := user.String() + "\n" + batch.String()
+		if _, ok := s.flushes[k]; ok {
+			return studybus.ErrDuplicateFlush
+		}
+		s.flushes[k] = struct{}{}
+	}
+
+	for _, p := range progress {
+		s.cards[key(p.User, p.Lang, p.Deck, p.Item)] = p
+	}
+	s.reviews = append(s.reviews, reviews...)
 
 	return nil
 }

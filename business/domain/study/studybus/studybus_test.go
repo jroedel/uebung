@@ -2,11 +2,13 @@ package studybus_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/jroedel/uebung/business/domain/study/stores/memdb"
 	"github.com/jroedel/uebung/business/domain/study/studybus"
+	"github.com/jroedel/uebung/business/types/batchid"
 	"github.com/jroedel/uebung/business/types/deckid"
 	"github.com/jroedel/uebung/business/types/langcode"
 	"github.com/jroedel/uebung/business/types/rating"
@@ -244,6 +246,59 @@ func TestGradeAgainSchedulesSoonerThanGood(t *testing.T) {
 	}
 }
 
+// A three-way drill is guessed right one time in three, so a fast correct answer
+// on a card never seen before is not evidence of memory. It is scheduled as Good,
+// not Easy — and logged as Good, since that is what the card was computed from.
+func TestFirstReviewIsRatedAtMostGood(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+	ctx := t.Context()
+
+	easy, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Haus", Rating: rating.Easy, Role: roleanswer.None}, anchor)
+	if err != nil {
+		t.Fatalf("Grade easy: %v", err)
+	}
+	good, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Mann", Rating: rating.Good, Role: roleanswer.None}, anchor)
+	if err != nil {
+		t.Fatalf("Grade good: %v", err)
+	}
+
+	if !easy.Due.Equal(good.Due) || easy.Stability != good.Stability {
+		t.Fatalf("first-review Easy scheduled to %v (S=%.2f), want the same as Good: %v (S=%.2f)",
+			easy.Due, easy.Stability, good.Due, good.Stability)
+	}
+
+	if logged := store.Reviews()[0].Rating; logged != rating.Good {
+		t.Fatalf("logged rating = %v, want good", logged)
+	}
+}
+
+// The cap is for first sight only. On a card the learner has met, a fast answer is
+// a real signal and Easy has to schedule further out than Good.
+func TestLaterReviewsKeepEasy(t *testing.T) {
+	b, _, user := newBusiness(t, 20)
+	ctx := t.Context()
+
+	for _, item := range []string{"Haus", "Mann"} {
+		if _, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: item, Rating: rating.Good, Role: roleanswer.None}, anchor); err != nil {
+			t.Fatalf("first review of %s: %v", item, err)
+		}
+	}
+
+	later := anchor.Add(4 * 24 * time.Hour)
+	easy, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Haus", Rating: rating.Easy, Role: roleanswer.None}, later)
+	if err != nil {
+		t.Fatalf("Grade easy: %v", err)
+	}
+	good, err := b.Grade(ctx, user, de, nouns, studybus.GradeInput{Item: "Mann", Rating: rating.Good, Role: roleanswer.None}, later)
+	if err != nil {
+		t.Fatalf("Grade good: %v", err)
+	}
+
+	if !easy.Due.After(good.Due) {
+		t.Fatalf("second-review Easy due %v, want later than Good %v", easy.Due, good.Due)
+	}
+}
+
 func TestBatchRequiresUserLanguageAndDeck(t *testing.T) {
 	b, _, _ := newBusiness(t, 20)
 	ctx := context.Background()
@@ -341,5 +396,85 @@ func TestConfusionsRequiresAScope(t *testing.T) {
 
 	if _, err := b.Confusions(t.Context(), user, de, deckid.DeckID{}); err == nil {
 		t.Fatal("Confusions accepted a zero deck")
+	}
+}
+
+// A flush applies every answer it carries and says how many.
+func TestGradeFlushAppliesEveryAnswer(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+
+	n, err := b.GradeFlush(t.Context(), user, de, nouns, batchid.MustParse("b-1"), []studybus.GradeInput{
+		{Item: "Haus", Rating: rating.Good, Role: roleanswer.None},
+		{Item: "Mann", Rating: rating.Again, Role: roleanswer.None},
+	}, anchor)
+	if err != nil {
+		t.Fatalf("GradeFlush: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("applied = %d, want 2", n)
+	}
+	if got := len(store.Reviews()); got != 2 {
+		t.Fatalf("logged %d reviews, want 2", got)
+	}
+}
+
+// Resending a flush that already landed — the client could not tell, because the
+// answer was lost on the way back — must not review the cards a second time.
+func TestGradeFlushRecognisesARetry(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+	batch := batchid.MustParse("3b241101-e2bb-4255-8caf-4136c566a962")
+	ins := []studybus.GradeInput{{Item: "Haus", Rating: rating.Good, Role: roleanswer.None}}
+
+	if _, err := b.GradeFlush(t.Context(), user, de, nouns, batch, ins, anchor); err != nil {
+		t.Fatalf("first GradeFlush: %v", err)
+	}
+
+	n, err := b.GradeFlush(t.Context(), user, de, nouns, batch, ins, anchor.Add(time.Minute))
+	if !errors.Is(err, studybus.ErrDuplicateFlush) {
+		t.Fatalf("retry err = %v, want ErrDuplicateFlush", err)
+	}
+	if n != 0 {
+		t.Fatalf("retry applied = %d, want 0", n)
+	}
+
+	card, _, _ := store.Get(t.Context(), user, de, nouns, "Haus")
+	if card.Reps != 1 {
+		t.Fatalf("Reps = %d after a retry, want 1", card.Reps)
+	}
+}
+
+// One bad answer refuses the whole flush. Applying the good ones would leave the
+// client unable to resend the rest without re-grading what had landed.
+func TestGradeFlushIsAllOrNothing(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+
+	_, err := b.GradeFlush(t.Context(), user, de, nouns, batchid.MustParse("b-1"), []studybus.GradeInput{
+		{Item: "Haus", Rating: rating.Good, Role: roleanswer.None},
+		{Item: "Mann", Role: roleanswer.None}, // no rating
+	}, anchor)
+	if err == nil {
+		t.Fatal("expected an error for a flush with an invalid answer")
+	}
+	if got := len(store.Reviews()); got != 0 {
+		t.Fatalf("a refused flush logged %d reviews, want 0", got)
+	}
+}
+
+// A card answered twice in one flush is reviewed twice, the second time from the
+// state the first left it in — not twice from the stored state.
+func TestGradeFlushAppliesRepeatsInOrder(t *testing.T) {
+	b, store, user := newBusiness(t, 20)
+
+	_, err := b.GradeFlush(t.Context(), user, de, nouns, batchid.MustParse("b-1"), []studybus.GradeInput{
+		{Item: "Haus", Rating: rating.Again, Role: roleanswer.None},
+		{Item: "Haus", Rating: rating.Good, Role: roleanswer.None},
+	}, anchor)
+	if err != nil {
+		t.Fatalf("GradeFlush: %v", err)
+	}
+
+	card, _, _ := store.Get(t.Context(), user, de, nouns, "Haus")
+	if card.Reps != 2 {
+		t.Fatalf("Reps = %d, want 2", card.Reps)
 	}
 }
